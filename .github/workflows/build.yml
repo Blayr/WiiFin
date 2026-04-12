@@ -51,6 +51,9 @@ jobs:
         run: |
           git clone --depth 1 --branch v3.6.3 \
             https://github.com/Mbed-TLS/mbedtls.git /tmp/mbedtls-src
+          # Replace upstream default config with our Wii-specific minimal config
+          cp "${GITHUB_WORKSPACE}/libs/mbedtls/include/mbedtls/mbedtls_config.h" \
+             /tmp/mbedtls-src/include/mbedtls/mbedtls_config.h
           cmake \
             -S /tmp/mbedtls-src \
             -B /tmp/mbedtls-build \
@@ -60,8 +63,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DENABLE_TESTING=OFF \
             -DENABLE_PROGRAMS=OFF \
-            -DUSE_SHARED_MBEDTLS_LIBRARY=OFF \
-            "-DCMAKE_C_FLAGS=-I${GITHUB_WORKSPACE}/libs/mbedtls/include"
+            -DUSE_SHARED_MBEDTLS_LIBRARY=OFF
           cmake --build /tmp/mbedtls-build
           mkdir -p libs/mbedtls/lib
           cp /tmp/mbedtls-build/library/libmbedtls.a \
