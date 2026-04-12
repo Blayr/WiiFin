@@ -31,8 +31,9 @@ jobs:
 
       - name: Install devkitPro portlibs
         run: |
-          dkp-pacman -Syu --noconfirm
-          dkp-pacman -S --noconfirm \
+          # -Syu can 403 on GH Actions due to devkitPro rate-limiting; non-fatal
+          dkp-pacman -Syu --noconfirm || true
+          dkp-pacman -S --noconfirm --needed \
             wii-dev \
             wii-libgrrlib \
             ppc-freetype \
