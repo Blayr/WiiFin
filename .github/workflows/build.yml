@@ -56,6 +56,7 @@ jobs:
             -B /tmp/mbedtls-build \
             -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Wii.cmake \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DENABLE_TESTING=OFF \
             -DENABLE_PROGRAMS=OFF \
