@@ -29,7 +29,7 @@ INCLUDES    := $(SOURCES) $(BUILD)
 # Source files and assets
 #---------------------------------------------------------------------------------
 CPPFILES    := $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.cpp))
-CFILES      := $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c))
+CFILES      := $(filter-out %/mplayer_stubs.c,$(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c)))
 
 SRC_OFILES  := $(addprefix $(BUILD)/,$(notdir $(CPPFILES:.cpp=.o)) $(notdir $(CFILES:.c=.o)))
 DEPFILES    := $(SRC_OFILES:.o=.d)
