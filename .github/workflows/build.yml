@@ -35,11 +35,16 @@ jobs:
           dkp-pacman -Syu --noconfirm || true
           dkp-pacman -S --noconfirm --needed \
             wii-dev \
-            wii-libgrrlib \
             ppc-freetype \
             ppc-libpng \
             ppc-libjpeg-turbo \
             ppc-brotli
+
+      - name: Build GRRLIB from source
+        run: |
+          git clone --depth 1 https://github.com/GRRLIB/GRRLIB.git /tmp/grrlib
+          cd /tmp/grrlib/GRRLIB
+          make clean && make install
 
       # mbedtls is gitignored (built locally); cross-compile it here for PPC
       - name: Build mbedTLS for Wii (PPC cross-compile)
