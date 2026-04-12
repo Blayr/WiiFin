@@ -44,7 +44,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/GRRLIB/GRRLIB.git /tmp/grrlib
           cd /tmp/grrlib/GRRLIB
-          make clean && make install
+          make && make install
 
       # mbedtls is gitignored (built locally); cross-compile it here for PPC
       - name: Build mbedTLS for Wii (PPC cross-compile)
