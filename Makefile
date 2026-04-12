@@ -29,7 +29,7 @@ INCLUDES    := $(SOURCES) $(BUILD)
 # Source files and assets
 #---------------------------------------------------------------------------------
 CPPFILES    := $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.cpp))
-CFILES      := $(filter-out %/mplayer_stubs.c,$(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c)))
+CFILES      := $(foreach dir,$(SOURCES),$(wildcard $(dir)/*.c))
 
 SRC_OFILES  := $(addprefix $(BUILD)/,$(notdir $(CPPFILES:.cpp=.o)) $(notdir $(CFILES:.c=.o)))
 DEPFILES    := $(SRC_OFILES:.o=.d)
@@ -82,9 +82,6 @@ LIBS        := -lgrrlib -lpngu `$(PKG_CONFIG) freetype2 libpng libjpeg --libs` -
 ifneq ($(wildcard $(CURDIR)/libs/mplayer-ce-build/libmplayer.a),)
 LIBPATHS    += -L$(CURDIR)/libs/mplayer-ce-build
 LIBS        := -Wl,--start-group -lmplayer -lfribidi -laesnd -ltinysmb -ldi -liso9660 -Wl,--end-group $(LIBS)
-else
-# No MPlayer CE — provide stubs so the build links without the full library
-OFILES      += $(BUILD)/mplayer_stubs.o
 endif
 
 #---------------------------------------------------------------------------------
@@ -120,9 +117,6 @@ $(BUILD)/%.o: source/jellyfin/%.cpp
 
 $(BUILD)/%.o: source/player/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(BUILD)/%.o: source/player/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
 
 # Explicit asset rules
 $(BUILD)/cursor_pointer_png.o: data/cursors/PointerP1-64.png
