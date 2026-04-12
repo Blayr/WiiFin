@@ -1,16 +1,21 @@
 # 🤝 Contributing to WiiFin
 
 Thank you for your interest in the project!  
-**WiiFin** is a **highly experimental** Jellyfin client for the Nintendo Wii.  
-Any help is welcome — but please note that many features are still incomplete or in testing.
+**WiiFin** is an experimental Jellyfin client for the Nintendo Wii.  
+Any help is welcome — but please note that the project is still under active development and some features may be incomplete or unstable on real hardware.
 
 ---
 
 ## 🚧 Project Status
 
-- 🔬 **Only the basic user interface is currently functional.**
-- 🎮 Wiimote pointer/navigation support is in development.
-- 📡 Jellyfin integration (auth, API requests) is still a work in progress.
+- ✅ Authentication (username/password and QuickConnect)
+- ✅ Library browsing (movies, TV shows, music) with cover art
+- ✅ Video and music playback via MPlayer CE (server-side transcoding)
+- ✅ Player overlay (seek, volume, next/prev, audio/subtitle tracks, intro skip)
+- ✅ Playback reporting to the Jellyfin server
+- ✅ HTTPS/TLS via mbedTLS (self-signed certificates supported)
+- ✅ Wiimote IR pointer and virtual on-screen keyboard
+- 🔄 Server discovery (not yet implemented)
 
 ---
 
@@ -25,10 +30,16 @@ Any help is welcome — but please note that many features are still incomplete 
 
 ## 📁 Project Structure
 
-- `source/` – main C++ source code
-- `textures/` – visual assets (PNG, TTF)
-- `build/` – compiled object files
-- `Makefile` – builds the project with automatic dependency management
+- `source/core/` – App lifecycle, background music, sound effects, utilities
+- `source/input/` – Wiimote and USB keyboard input
+- `source/jellyfin/` – Jellyfin HTTP API client (HTTPS via mbedTLS)
+- `source/player/` – MPlayer CE integration and player overlay HUD
+- `source/ui/` – All views: Connect, Library, Profile, Settings, MusicPlayer
+- `data/` – Graphical assets (PNG, TTF, sounds)
+- `libs/` – Bundled mbedTLS
+- `tools/` – WAD packager, banner generator
+- `apps/WiiFin/` – Homebrew Channel metadata
+- `Makefile` – devkitPro-compatible build script
 
 ---
 

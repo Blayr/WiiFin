@@ -18,27 +18,36 @@
 ---
 
 <p align="center">
-<strong>WiiFin</strong> is a highly experimental homebrew client for <a href="https://jellyfin.org">Jellyfin</a>, built specifically for the Nintendo Wii.  
-It aims to provide a lightweight, console-friendly media browsing experience, written in C++ using <a href="https://github.com/GRRLIB/GRRLIB">GRRLIB</a>.
+<strong>WiiFin</strong> is an experimental homebrew client for <a href="https://jellyfin.org">Jellyfin</a>, built specifically for the Nintendo Wii.  
+It provides a lightweight, console-friendly media browsing and playback experience, written in C++ using <a href="https://github.com/GRRLIB/GRRLIB">GRRLIB</a> and <a href="https://github.com/dborth/mplayer-ce">MPlayer CE</a>.
 </p>
 
 ---
 
 ## ⚠️ Project Status
 
-> 🚧 **Work in progress** – this project is under active development and is not yet functional for media playback.
+> 🚧 **Experimental** – functional but still under active development. Expect rough edges on real hardware.
 
 ### ✅ What works:
-- The UI renders correctly on both real Wii hardware and in Dolphin Emulator.
+- **Authentication**: login with username/password or via **QuickConnect** (approve on another device)
+- **Saved profiles**: multiple accounts stored securely (access token only, no password stored)
+- **Library browsing**: movies, TV shows, music libraries with cover art loaded from the server
+- **Detail view**: synopsis, rating, genres, cast, director, audio/subtitle track selection
+- **Continue Watching** and **Next Up** rows
+- **TV shows**: season and episode navigation
+- **Video playback**: server-side transcoding streamed through the integrated MPlayer CE engine
+- **Music playback**: audio libraries, album/track navigation
+- **Player overlay**: seek bar, volume control, next/prev episode, audio & subtitle track switching, intro skip
+- **Playback reporting**: progress sent back to the Jellyfin server (resume where you left off)
+- **HTTPS**: TLS connections via mbedTLS (self-signed certificates supported)
+- **Wiimote IR pointer** and **virtual on-screen keyboard**
+- **Background music** on menus
+- Ships as a ready-to-use `.dol` and installable `.wad` (Wii / vWii)
 
-### ❌ What doesn't (yet):
-- No Jellyfin API integration.
-- No media playback.
-
-Development is currently focused on:
-- Interface layout
-- Wiimote input support
-- Core structure and navigation
+### ⚠️ Known limitations:
+- Direct-play is not supported; all video is transcoded by the server
+- No 5.1 multi-channel audio (stereo only via transcoding)
+- Subtitle rendering relies on the server embedding them into the video stream
 
 ---
 
@@ -46,25 +55,26 @@ Development is currently focused on:
 
 ### Requirements:
 
-- [devkitPro](https://devkitpro.org)
-- `devkitPPC`, `libogc`
-- Graphics libraries: `GRRLIB`, `libpngu`, `freetype`, `libjpeg`
+- [devkitPro](https://devkitpro.org) with `devkitPPC`, `libogc`, and `wii-dev` portlibs
+- Graphics: `GRRLIB`, `libpngu`, `freetype`, `libjpeg`
+- mbedTLS (bundled under `libs/`, cross-compiled automatically by the CI)
+- **Optional**: MPlayer CE compiled as `libmplayer.a` — required for video playback. See [MPLAYER_CE_BUILD.md](MPLAYER_CE_BUILD.md) for instructions. Without it, WiiFin still compiles but video playback is unavailable.
 
 ### Building:
 
 ```bash
 ./build.sh
-````
+```
 
 ### Running:
 
 On **Dolphin Emulator**:
 
 ```bash
-dolphin-emu -e WiiFin.elf
+dolphin-emu -e WiiFin.dol
 ```
 
-On **real Wii hardware**, convert the ELF file to `.dol` or `.wad` format.
+On **real Wii hardware**: copy `WiiFin.dol` to `SD:/apps/WiiFin/boot.dol`, or install `WiiFin.wad` using a WAD manager (works on vWii too).
 
 ---
 
@@ -72,25 +82,30 @@ On **real Wii hardware**, convert the ELF file to `.dol` or `.wad` format.
 
 ```
 WiiFin/
-├── source/          # Core C++ source files
+├── source/
+│   ├── core/        # App lifecycle, background music, utilities
+│   ├── input/       # Wiimote + USB keyboard input
+│   ├── jellyfin/    # Jellyfin HTTP API client (HTTPS via mbedTLS)
+│   ├── player/      # MPlayer CE integration, player overlay HUD
+│   └── ui/          # All views: Connect, Library, Profile, Settings
 ├── data/            # PNG/TTF graphical assets
+├── libs/            # Bundled mbedTLS
+├── tools/           # WAD packager, banner generator
 ├── Makefile         # devkitPro-compatible build script
-└── README.md
+└── apps/WiiFin/     # Homebrew Channel metadata
 ```
 
 ---
 
 ## 🚀 Roadmap
 
-* [ ] Full Jellyfin API support (browse, playback)
-* [ ] Server discovery and settings UI
-* [ ] Localization / multi-language support
+* [ ] Server discovery (Jellyfin auto-detect on local network)
 
 ---
 
 ## 📸 Screenshots
 
-<img src="https://github.com/fabienmillet/WiiFin/blob/main/assets/preview.png?raw=true" alt="WiiFin Menu Screenshot" width="500"/><br> <em>WiiFin Menu running in Dolphin Emulator</em>
+<img src="https://github.com/fabienmillet/WiiFin/blob/main/assets/preview.png?raw=true" alt="WiiFin Menu Screenshot" width="500"/><br> <em>WiiFin running in Dolphin Emulator</em>
 
 ---
 
