@@ -28,4 +28,3 @@ Thumbs.db
 
 # Bundled third-party static libs (built locally; not committed to source control)
 libs/mbedtls/lib/
-libs/mplayer-ce-build/
