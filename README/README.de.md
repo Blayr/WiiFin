@@ -6,39 +6,48 @@
 <p align="center">
   <a href="../README.md"><img src="https://flagcdn.com/w40/gb.png" width="28" alt="English"/></a>
   &nbsp;
-  <a href="README/README.fr.md"><img src="https://flagcdn.com/w40/fr.png" width="28" alt="Français"/></a>
+  <a href="README.fr.md"><img src="https://flagcdn.com/w40/fr.png" width="28" alt="Français"/></a>
   &nbsp;
-  <a href="README/README.de.md"><img src="https://flagcdn.com/w40/de.png" width="28" alt="Deutsch"/></a>
+  <a href="README.de.md"><img src="https://flagcdn.com/w40/de.png" width="28" alt="Deutsch"/></a>
   &nbsp;
-  <a href="README/README.es.md"><img src="https://flagcdn.com/w40/es.png" width="28" alt="Español"/></a>
+  <a href="README.es.md"><img src="https://flagcdn.com/w40/es.png" width="28" alt="Español"/></a>
   &nbsp;
-  <a href="README/README.it.md"><img src="https://flagcdn.com/w40/it.png" width="28" alt="Italiano"/></a>
+  <a href="README.it.md"><img src="https://flagcdn.com/w40/it.png" width="28" alt="Italiano"/></a>
 </p>
 
 ---
 
 <p align="center">
-<strong>WiiFin</strong> ist ein stark experimenteller Homebrew-Client für <a href="https://jellyfin.org">Jellyfin</a>, der speziell für die Nintendo Wii entwickelt wurde.  
-Er soll ein leichtgewichtiges, konsolenfreundliches Medienbrowser-Erlebnis bieten und wurde in C++ mit <a href="https://github.com/GRRLIB/GRRLIB">GRRLIB</a> geschrieben.
+<strong>WiiFin</strong> ist ein experimenteller Homebrew-Client für <a href="https://jellyfin.org">Jellyfin</a>, der speziell für die Nintendo Wii entwickelt wurde.<br>
+Er bietet ein leichtgewichtiges, konsolenfreundliches Erlebnis zum Durchsuchen und Abspielen von Medien, geschrieben in C++ mit <a href="https://github.com/GRRLIB/GRRLIB">GRRLIB</a> und <a href="https://github.com/dborth/mplayer-ce">MPlayer CE</a>.
 </p>
 
 ---
 
 ## ⚠️ Projektstatus
 
-> 🚧 **In Entwicklung** – dieses Projekt wird aktiv entwickelt und unterstützt derzeit keine Medienwiedergabe.
+> 🚧 **Experimentell** – funktionsfähig, aber noch in aktiver Entwicklung. Auf echter Hardware können Fehler auftreten.
 
 ### ✅ Was funktioniert:
-- Die Benutzeroberfläche wird korrekt auf echter Wii-Hardware und im Dolphin-Emulator dargestellt.
+- **Authentifizierung**: Anmeldung mit Benutzername/Passwort oder per **QuickConnect** (Bestätigung auf einem anderen Gerät)
+- **Gespeicherte Profile**: Mehrere Konten werden sicher gespeichert (nur Access-Token, kein Passwort)
+- **Mediatheken durchsuchen**: Filme, Serien, Musik mit Cover-Art vom Server
+- **Detailansicht**: Synopsis, Altersfreigabe, Genres, Besetzung, Regie, Auswahl von Audio- und Untertitelspuren
+- **Weiterschauen** und **Als Nächstes**
+- **Serien**: Navigation nach Staffeln und Episoden
+- **Videowiedergabe**: Serverseitiges Transcoding, gestreamt über die integrierte MPlayer-CE-Engine
+- **Musikwiedergabe**: Audio-Bibliotheken, Album-/Titel-Navigation
+- **Player-Overlay**: Fortschrittsleiste, Lautstärke, nächste/vorherige Episode, Audio- und Untertitelspurwechsel, Intro überspringen
+- **Wiedergabe-Reporting**: Fortschritt wird an den Jellyfin-Server gemeldet (Weiterschauen wo man aufgehört hat)
+- **HTTPS**: TLS-Verbindungen via mbedTLS (selbstsignierte Zertifikate werden unterstützt)
+- **Wiimote IR-Zeiger** und **virtuelle Bildschirmtastatur**
+- **Hintergrundmusik** in den Menüs
+- Wird als sofort nutzbares `.dol` und installierbares `.wad` (Wii / vWii) mitgeliefert
 
-### ❌ Was noch nicht funktioniert:
-- Keine Jellyfin-API-Integration.
-- Keine Medienwiedergabe.
-
-Derzeitige Entwicklungsziele:
-- Benutzeroberfläche und Layout
-- Wiimote-Unterstützung
-- Grundstruktur und Navigation
+### ⚠️ Bekannte Einschränkungen:
+- Kein Direct-Play; alle Videos werden serverseitig transcodiert
+- Kein 5.1-Surround-Sound (nur Stereo via Transcoding)
+- Untertitel werden vom Server in den Videostream eingebettet
 
 ---
 
@@ -46,25 +55,26 @@ Derzeitige Entwicklungsziele:
 
 ### Voraussetzungen:
 
-- [devkitPro](https://devkitpro.org)
-- `devkitPPC`, `libogc`
+- [devkitPro](https://devkitpro.org) mit `devkitPPC`, `libogc` und den `wii-dev`-Portlibs
 - Grafikbibliotheken: `GRRLIB`, `libpngu`, `freetype`, `libjpeg`
+- mbedTLS (enthalten in `libs/`, wird automatisch von der CI kompiliert)
+- **Optional**: MPlayer CE als `libmplayer.a` – erforderlich für die Videowiedergabe. Siehe [MPLAYER_CE_BUILD.md](../MPLAYER_CE_BUILD.md). Ohne diese Bibliothek kompiliert WiiFin, aber die Videowiedergabe ist nicht verfügbar.
 
 ### Kompilierung:
 
 ```bash
 ./build.sh
-````
+```
 
 ### Ausführen:
 
 Im **Dolphin-Emulator**:
 
 ```bash
-dolphin-emu -e WiiFin.elf
+dolphin-emu -e WiiFin.dol
 ```
 
-Auf echter **Wii-Hardware**: ELF-Datei in `.dol` oder `.wad` konvertieren.
+Auf echter **Wii-Hardware**: `WiiFin.dol` nach `SD:/apps/WiiFin/boot.dol` kopieren, oder `WiiFin.wad` mit einem WAD-Manager installieren (auch auf vWii).
 
 ---
 
@@ -72,25 +82,30 @@ Auf echter **Wii-Hardware**: ELF-Datei in `.dol` oder `.wad` konvertieren.
 
 ```
 WiiFin/
-├── source/          # C++-Quellcode
-├── data/            # Grafische Ressourcen (PNG, TTF)
-├── Makefile         # devkitPro-kompatibles Build-Skript
-└── README.md
+├── source/
+│   ├── core/        # App-Lebenszyklus, Hintergrundmusik, Hilfsfunktionen
+│   ├── input/       # Wiimote- & USB-Tastatur-Eingabe
+│   ├── jellyfin/    # Jellyfin-HTTP-API-Client (HTTPS via mbedTLS)
+│   ├── player/      # MPlayer-CE-Integration, Player-Overlay-HUD
+│   └── ui/          # Alle Views: Connect, Library, Profile, Settings
+├── data/            # Grafische Assets (PNG/TTF)
+├── libs/            # Mitgeliefertes mbedTLS
+├── tools/           # WAD-Packer, Banner-Generator
+├── Makefile         # DevkitPro-kompatibles Build-Skript
+└── apps/WiiFin/     # Homebrew-Channel-Metadaten
 ```
 
 ---
 
 ## 🚀 Roadmap
 
-* [ ] Vollständige Jellyfin-API-Unterstützung (Browsen, Wiedergabe)
-* [ ] Servererkennung und Einstellungsmenü
-* [ ] Lokalisierung / Mehrsprachigkeit
+* [ ] Servererkennung (automatisches Auffinden von Jellyfin im lokalen Netzwerk)
 
 ---
 
 ## 📸 Screenshots
 
-<img src="https://github.com/fabienmillet/WiiFin/blob/main/assets/preview.png?raw=true" alt="WiiFin Menü-Screenshot" width="500"/><br> <em>WiiFin-Menü im Dolphin-Emulator</em>
+<img src="https://github.com/fabienmillet/WiiFin/blob/main/assets/preview.png?raw=true" alt="WiiFin Screenshot" width="500"/><br> <em>WiiFin im Dolphin-Emulator</em>
 
 ---
 
@@ -98,12 +113,12 @@ WiiFin/
 
 WiiFin steht für Pull Requests, Bugreports und neue Ideen offen.
 
-* 📘 Lies die [Beitragsrichtlinien](CONTRIBUTING.md)
-* 🐛 Verwende die [Bugreport-Vorlage](.github/ISSUE_TEMPLATE/bug_report.md)
-* 💡 Für Ideen verwende die [Feature-Vorschlagsvorlage](.github/ISSUE_TEMPLATE/feature_request.md)
+* 📘 Lies die [Beitragsrichtlinien](../CONTRIBUTING.md)
+* 🐛 Nutze die [Bugreport-Vorlage](../.github/ISSUE_TEMPLATE/bug_report.md)
+* 💡 Idee? Nutze die [Feature-Request-Vorlage](../.github/ISSUE_TEMPLATE/feature_request.md)
 
 <a href="https://discord.gg/p9DXfEmUYu">
-  <img src="https://img.shields.io/badge/Tritt%20unserem%20Discord%20bei-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord-Abzeichen"/>
+  <img src="https://img.shields.io/badge/Discord%20beitreten-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord-Badge"/>
 </a>
 
 ---
@@ -111,4 +126,4 @@ WiiFin steht für Pull Requests, Bugreports und neue Ideen offen.
 ## 📜 Lizenz
 
 Dieses Projekt steht unter der **GPLv3**-Lizenz.
-Weitere Infos findest du in der Datei [LICENSE](LICENSE).
+Weitere Informationen findest du in der Datei [LICENSE](../LICENSE).

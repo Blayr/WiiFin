@@ -1,0 +1,112 @@
+name: Build & Release WiiFin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  DEVKITPRO: /opt/devkitpro
+  DEVKITPPC: /opt/devkitpro/devkitPPC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitppc:latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update -q
+          apt-get install -y --no-install-recommends \
+            cmake ninja-build imagemagick python3 python3-pip zip
+          pip3 install --quiet pycryptodome pillow
+
+      - name: Install devkitPro portlibs
+        run: |
+          dkp-pacman -Syu --noconfirm
+          dkp-pacman -S --noconfirm \
+            wii-dev \
+            wii-libgrrlib \
+            ppc-freetype \
+            ppc-libpng \
+            ppc-libjpeg-turbo \
+            ppc-brotli
+
+      # mbedtls is gitignored (built locally); cross-compile it here for PPC
+      - name: Build mbedTLS for Wii (PPC cross-compile)
+        run: |
+          git clone --depth 1 --branch v3.6.3 \
+            https://github.com/Mbed-TLS/mbedtls.git /tmp/mbedtls-src
+          cmake \
+            -S /tmp/mbedtls-src \
+            -B /tmp/mbedtls-build \
+            -GNinja \
+            -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Wii.cmake \
+            -DCMAKE_BUILD_TYPE=MinSizeRel \
+            -DENABLE_TESTING=OFF \
+            -DENABLE_PROGRAMS=OFF \
+            -DUSE_SHARED_MBEDTLS_LIBRARY=OFF \
+            "-DCMAKE_C_FLAGS=-I${GITHUB_WORKSPACE}/libs/mbedtls/include"
+          cmake --build /tmp/mbedtls-build
+          mkdir -p libs/mbedtls/lib
+          cp /tmp/mbedtls-build/library/libmbedtls.a \
+             /tmp/mbedtls-build/library/libmbedx509.a \
+             /tmp/mbedtls-build/library/libmbedcrypto.a \
+             libs/mbedtls/lib/
+
+      - name: Build WiiFin
+        run: make -j$(nproc)
+
+      - name: Package for Homebrew Channel (HBC)
+        run: |
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          cp WiiFin.dol apps/WiiFin/boot.dol
+          # HBC requires a 128×128 icon.png — crop text from bottom then resize
+          convert assets/logo_wiifin.png -gravity North -crop 1024x768+0+0 +repage -resize 128x128 apps/WiiFin/icon.png
+          # Stamp version into meta.xml
+          sed -i "s|<version>.*</version>|<version>${VERSION#v}</version>|" apps/WiiFin/meta.xml
+          sed -i "s|<release_date>.*</release_date>|<release_date>$(date -u +%Y%m%d%H%M%S)</release_date>|" apps/WiiFin/meta.xml
+          sed -i "s|#define WIIFIN_VERSION \".*\"|#define WIIFIN_VERSION \"${VERSION#v}\"|" source/version.h
+          zip -r WiiFin-hbc.zip apps/WiiFin/
+
+      - name: Generate Wii channel WAD
+        run: |
+          python3 tools/make_wad.py \
+            --title-id WFIN \
+            --title "WiiFin" \
+            --banner assets/logo_wiifin_banner.png \
+            --icon   assets/logo_wiifin.png \
+            --version "${GITHUB_REF_NAME#v}" \
+            WiiFin.dol WiiFin.wad || true
+          # '|| true' keeps the build green even if WAD packing fails (e.g. missing certs)
+          if [ -f WiiFin.wad ]; then
+            echo "WAD_BUILT=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            WiiFin.dol
+            WiiFin-hbc.zip
+            WiiFin.wad
+
+      - name: Upload artifacts (non-tag builds)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiifin-${{ github.sha }}
+          path: |
+            WiiFin.dol
+            WiiFin-hbc.zip
