@@ -18,6 +18,9 @@ volatile int g_wiifin_gx_active = 0;
 /* mplayer.c */
 volatile int async_quit_request = 0;
 
+/* Stream-opened callback (patched mplayer.c) */
+void (*g_stream_opened_cb)(void) = 0;
+
 int mplayer_main(int argc, char **argv)
 {
     (void)argc; (void)argv;
