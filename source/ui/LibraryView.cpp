@@ -33,7 +33,7 @@ static void jpegErrExit(j_common_ptr cinfo) {
 // from the worker thread and corrupts the heap allocator state.
 static void jpegNoOp(j_common_ptr) {}
 
-static GRRLIB_texImg* loadJPEGTexture(const u8* data, u32 size) {
+GRRLIB_texImg* loadJPEGTexture(const u8* data, u32 size) {
     // Reject immediately if data doesn't start with the JPEG SOI marker.
     if (size < 3 || data[0] != 0xFF || data[1] != 0xD8 || data[2] != 0xFF)
         return nullptr;
@@ -161,9 +161,22 @@ static GRRLIB_texImg* loadJPEGTexture(const u8* data, u32 size) {
 LibraryView::LibraryView(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf, GRRLIB_texImg* cursor,
                           GRRLIB_texImg* ring,
                           JellyfinClient& c,
-                          const JellyfinAuth& a, const std::string& url)
-    : font(f), jpFont(jf), cursorTex(cursor), ringTex(ring), client(c), auth(a), serverUrl(url) {
+                          const JellyfinAuth& a, const std::string& url,
+                          bool asyncPosterLoading)
+    : font(f), jpFont(jf), cursorTex(cursor), ringTex(ring), client(c), auth(a), serverUrl(url),
+      asyncPosterLoadingEnabled(asyncPosterLoading) {
     userIconTex = GRRLIB_LoadTexture(data_icon_user_png);
+    if (asyncPosterLoadingEnabled) {
+        posterLoader.init(&client, &serverUrl, &auth);
+        detailLoader.init(&client, &serverUrl, &auth);
+    }
+}
+
+void LibraryView::shutdownImageLoader() {
+    if (asyncPosterLoadingEnabled) {
+        posterLoader.shutdown();
+        detailLoader.shutdown();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +335,7 @@ void LibraryView::clampScroll() {
 }
 
 void LibraryView::freePosters() {
+    if (asyncPosterLoadingEnabled) posterLoader.cancelAll();
     for (int i = 0; i < POSTER_VISIBLE; i++) {
         if (posterTextures[i]) {
             GRRLIB_FreeTexture(posterTextures[i]);
@@ -331,6 +345,7 @@ void LibraryView::freePosters() {
 }
 
 void LibraryView::freeDetail() {
+    if (asyncPosterLoadingEnabled) detailLoader.cancelAll();
     if (detailTex) { GRRLIB_FreeTexture(detailTex); detailTex = nullptr; }
     detail = JellyfinItemDetail();
     detailLines.clear();
@@ -343,22 +358,37 @@ void LibraryView::freeDetail() {
 // ---------------------------------------------------------------------------
 
 void LibraryView::loadPosters() {
-    freePosters();
+    freePosters(); // also cancels any leftover background poster loads
     int n = (int)items.size();
     if (n > POSTER_VISIBLE) n = POSTER_VISIBLE;
-    // Fetch and decode all posters inside one background pass so the spinner
-    // keeps animating through both network I/O and JPEG decode.
-    // loadJPEGTexture only does CPU/heap work; GRRLIB_FlushTex is just
-    // DCFlushRange (no GX), so it is safe to call from the worker thread.
-    runWithLoading([&]() {
+
+    if (asyncPosterLoadingEnabled) {
+        // Fire off the batch and show the grid immediately (posterLabels[i]
+        // below stands in for each poster until its fetch completes -- see
+        // PostersReady/GlobalFavoritesReady's pump loop in update()).
+        BackgroundImageLoader::Request reqs[POSTER_VISIBLE];
         for (int i = 0; i < n; i++) {
-            std::string imgBytes;
-            client.getItemImageBytes(serverUrl, auth, items[i].id, POSTER_W, POSTER_H, imgBytes);
-            if (!imgBytes.empty())
-                posterTextures[i] = loadJPEGTexture(
-                    (const u8*)imgBytes.data(), (u32)imgBytes.size());
+            reqs[i].itemId      = items[i].id;
+            reqs[i].width       = POSTER_W;
+            reqs[i].height      = POSTER_H;
+            reqs[i].targetIndex = i;
         }
-    });
+        posterLoader.submitBatch(reqs, n);
+    } else {
+        // Fetch and decode all posters inside one background pass so the spinner
+        // keeps animating through both network I/O and JPEG decode.
+        // loadJPEGTexture only does CPU/heap work; GRRLIB_FlushTex is just
+        // DCFlushRange (no GX), so it is safe to call from the worker thread.
+        runWithLoading([&]() {
+            for (int i = 0; i < n; i++) {
+                std::string imgBytes;
+                client.getItemImageBytes(serverUrl, auth, items[i].id, POSTER_W, POSTER_H, imgBytes);
+                if (!imgBytes.empty())
+                    posterTextures[i] = loadJPEGTexture(
+                        (const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+        });
+    }
 
     // Pre-compute truncated display labels
     {
@@ -392,22 +422,43 @@ void LibraryView::loadDetail() {
     detailIsEpisode     = (detailReturnState == State::EpisodesReady) || detailIsEpisodeHint;
     detailIsEpisodeHint = false;
 
-    // Fetch metadata and decode thumbnail inside one background pass so the
-    // spinner animates throughout (no freeze between network and JPEG decode).
     bool ok = false; std::string fetchErr;
     bool isEp = detailIsEpisode;
-    runWithLoading([&]() {
-        ok = client.getItemDetail(serverUrl, auth, detailItemId, detail);
-        if (!ok) { fetchErr = client.lastError(); return; }
-        std::string imgBytes;
-        if (isEp)
-            client.getItemImageBytes(serverUrl, auth, detailItemId, 304, 171, imgBytes);
-        else
-            client.getItemImageBytes(serverUrl, auth, detailItemId, 240, 340, imgBytes);
-        if (!imgBytes.empty())
-            detailTex = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
-    });
-    if (!ok) { errMsg = fetchErr; state = State::Error; return; }
+
+    if (asyncPosterLoadingEnabled) {
+        // Metadata is fast and needed before anything can render, so it stays
+        // a blocking call; the poster fetch runs in the background so the
+        // detail page (title/overview/cast/etc.) appears the moment metadata
+        // arrives, without waiting on the image too. detail.name (via
+        // detailLines/render) stands in as alt text until it's ready.
+        runWithLoading([&]() {
+            ok = client.getItemDetail(serverUrl, auth, detailItemId, detail);
+            if (!ok) fetchErr = client.lastError();
+        });
+        if (!ok) { errMsg = fetchErr; state = State::Error; return; }
+
+        BackgroundImageLoader::Request req;
+        req.itemId      = detailItemId;
+        req.width       = isEp ? 304 : 240;
+        req.height      = isEp ? 171 : 340;
+        req.targetIndex = 0;
+        detailLoader.submitBatch(&req, 1);
+    } else {
+        // Fetch metadata and decode thumbnail inside one background pass so the
+        // spinner animates throughout (no freeze between network and JPEG decode).
+        runWithLoading([&]() {
+            ok = client.getItemDetail(serverUrl, auth, detailItemId, detail);
+            if (!ok) { fetchErr = client.lastError(); return; }
+            std::string imgBytes;
+            if (isEp)
+                client.getItemImageBytes(serverUrl, auth, detailItemId, 304, 171, imgBytes);
+            else
+                client.getItemImageBytes(serverUrl, auth, detailItemId, 240, 340, imgBytes);
+            if (!imgBytes.empty())
+                detailTex = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+        });
+        if (!ok) { errMsg = fetchErr; state = State::Error; return; }
+    }
 
     state = State::DetailReady;
 
@@ -489,6 +540,7 @@ void LibraryView::releaseForPlayback() {
     freeTVSuggestions();
     freeTVUpcoming();
     freeMusicSuggestions();
+    if (asyncPosterLoadingEnabled) detailLoader.cancelAll();
     if (detailTex) { GRRLIB_FreeTexture(detailTex); detailTex = nullptr; }
     detail = JellyfinItemDetail();
     detailLines.clear();
@@ -1262,6 +1314,15 @@ bool LibraryView::update(ir_t& ir) {
             return false;
 
         case State::PostersReady: {
+            if (asyncPosterLoadingEnabled) {
+                for (int i = 0; i < POSTER_VISIBLE; i++) {
+                    if (posterLoader.isDone(i)) {
+                        GRRLIB_texImg* t = posterLoader.takeResult(i);
+                        if (posterTextures[i]) GRRLIB_FreeTexture(posterTextures[i]);
+                        posterTextures[i] = t;
+                    }
+                }
+            }
             int n = (int)items.size();
             if (Input::isBackPressed()) {
                 freePosters();
@@ -1870,6 +1931,11 @@ bool LibraryView::update(ir_t& ir) {
         }
 
         case State::DetailReady: {
+            if (asyncPosterLoadingEnabled && detailLoader.isDone(0)) {
+                GRRLIB_texImg* t = detailLoader.takeResult(0);
+                if (detailTex) GRRLIB_FreeTexture(detailTex);
+                detailTex = t;
+            }
             // Play: A without IR (d-pad), or A with IR hovering the poster
             const int DPW = detailIsEpisode ? 210 : 200;
             const int DPH = detailIsEpisode ? 118 : 285;
@@ -2088,6 +2154,15 @@ bool LibraryView::update(ir_t& ir) {
             return false;
 
         case State::GlobalFavoritesReady: {
+            if (asyncPosterLoadingEnabled) {
+                for (int i = 0; i < POSTER_VISIBLE; i++) {
+                    if (posterLoader.isDone(i)) {
+                        GRRLIB_texImg* t = posterLoader.takeResult(i);
+                        if (posterTextures[i]) GRRLIB_FreeTexture(posterTextures[i]);
+                        posterTextures[i] = t;
+                    }
+                }
+            }
             int n = (int)items.size();
             // Back → return to Libraries tab
             if (Input::isBackPressed()) {
@@ -2857,6 +2932,12 @@ void LibraryView::render(ir_t& ir) {
                 GRRLIB_ClipDrawing(px, py, (u32)visW, POSTER_H);
                 GRRLIB_DrawImg(px + ox, py + oy, posterTextures[i], 0, s * ws, s, 0xFFFFFFFF);
                 GRRLIB_ClipReset();
+            } else if (i < n) {
+                // Image still loading (or failed) — show the item name as alt text.
+                int tw = (int)GRRLIB_WidthTTF(font, posterLabels[i].c_str(), 12);
+                int tx = px + (visW - tw) / 2;
+                if (tx < px + 4) tx = px + 4;
+                GRRLIB_PrintfTTF(tx, py + POSTER_H / 2 - 6, font, posterLabels[i].c_str(), 12, 0x8899AAFF);
             }
             // Progress bar at bottom of poster slot
             if (i < (int)items.size() &&
@@ -2996,6 +3077,12 @@ void LibraryView::render(ir_t& ir) {
                 GRRLIB_ClipDrawing(px, py, (u32)visW, POSTER_H);
                 GRRLIB_DrawImg(px + ox, py + oy, posterTextures[i], 0, s * ws, s, 0xFFFFFFFF);
                 GRRLIB_ClipReset();
+            } else if (i < n) {
+                // Image still loading (or failed) — show the item name as alt text.
+                int tw = (int)GRRLIB_WidthTTF(font, posterLabels[i].c_str(), 12);
+                int tx = px + (visW - tw) / 2;
+                if (tx < px + 4) tx = px + 4;
+                GRRLIB_PrintfTTF(tx, py + POSTER_H / 2 - 6, font, posterLabels[i].c_str(), 12, 0x8899AAFF);
             }
 
             // Type badge (Movie / Series / Album)
@@ -3629,6 +3716,34 @@ void LibraryView::drawDetailView(ir_t& ir) {
         GRRLIB_ClipDrawing(POSTER_X, POSTER_Y, (u32)visW, POSTER_H2);
         GRRLIB_DrawImg(POSTER_X + ox, POSTER_Y + oy, detailTex, 0, s * ws, s, 0xFFFFFFFF);
         GRRLIB_ClipReset();
+    } else {
+        // Poster still loading (or failed) — show the title as alt text, word-wrapped.
+        std::vector<std::string> nameLines;
+        {
+            std::string remaining = detail.name;
+            std::string line;
+            while (!remaining.empty() && (int)nameLines.size() < 5) {
+                size_t sp = remaining.find(' ');
+                std::string word = (sp == std::string::npos) ? remaining : remaining.substr(0, sp);
+                remaining = (sp == std::string::npos) ? std::string() : remaining.substr(sp + 1);
+                std::string candidate = line.empty() ? word : line + " " + word;
+                if (GRRLIB_WidthTTF(font, candidate.c_str(), 14) > (u32)(visW - 12) && !line.empty()) {
+                    nameLines.push_back(line);
+                    line = word;
+                } else {
+                    line = candidate;
+                }
+            }
+            if (!line.empty() && (int)nameLines.size() < 5) nameLines.push_back(line);
+        }
+        const int lineH = 18;
+        int ty = POSTER_Y + (POSTER_H2 - (int)nameLines.size() * lineH) / 2;
+        for (size_t li = 0; li < nameLines.size(); li++) {
+            int tw = (int)GRRLIB_WidthTTF(font, nameLines[li].c_str(), 14);
+            int tx = POSTER_X + (visW - tw) / 2;
+            GRRLIB_PrintfTTF(tx, ty, font, nameLines[li].c_str(), 14, 0x8899AAFF);
+            ty += lineH;
+        }
     }
 
     // ---- Play button overlay (shown when cursor hovers the poster) ----

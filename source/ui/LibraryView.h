@@ -7,13 +7,19 @@
 #include <string>
 #include "../jellyfin/JellyfinClient.h"
 #include "MusicPlayerView.h"
+#include "BackgroundImageLoader.h"
 
 class LibraryView {
 public:
     LibraryView(GRRLIB_ttfFont* font, GRRLIB_ttfFont* jpFont, GRRLIB_texImg* cursorTex,
                 GRRLIB_texImg* ringTex,
                 JellyfinClient& client,
-                const JellyfinAuth& auth, const std::string& serverUrl);
+                const JellyfinAuth& auth, const std::string& serverUrl,
+                bool asyncPosterLoading = true);
+
+    // Stops and joins the background poster-image loader's worker thread.
+    // Call once, right before this LibraryView is destroyed.
+    void shutdownImageLoader();
 
     // Returns true when the user exits (B from libraries grid) OR requests play.
     // If pendingPlayUrl is non-empty on return, the caller should play that URL
@@ -65,6 +71,9 @@ private:
     JellyfinClient& client;
     JellyfinAuth    auth;
     std::string     serverUrl;
+    bool                  asyncPosterLoadingEnabled;
+    BackgroundImageLoader posterLoader;
+    BackgroundImageLoader detailLoader; // single-image batches for the detail view's poster
 
     enum class State {
         LibsInit,     // render loading screen, then transition

@@ -30,4 +30,5 @@ private:
     ir_t ir;
     JellyfinClient jellyfinClient;
     bool musicEnabled = true;
+    bool bgImageLoadingEnabled = true; // dev default: on. See wiifin.cfg "bg_image_loading".
 };

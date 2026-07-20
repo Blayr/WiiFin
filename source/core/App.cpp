@@ -1057,7 +1057,7 @@ void App::loop() {
         auth.serverName  = p.serverName;
         if (!jellyfinClient.initNetwork()) return; /* DNS won't work without this */
         LibraryView lv(font, jpFont, cursorPointerTex, ringTex,
-                       jellyfinClient, auth, p.serverUrl);
+                       jellyfinClient, auth, p.serverUrl, bgImageLoadingEnabled);
         for (;;) {
             while (true) {
                 Input::update();
@@ -1068,7 +1068,7 @@ void App::loop() {
                 lv.render(ir);
                 GRRLIB_Render();
             }
-            if (!running) return;
+            if (!running) { lv.shutdownImageLoader(); return; }
             if (lv.pendingPlayIsMusic) {
                 lv.pendingPlayIsMusic = false;
                 SoundFX::play(SoundFX::FX::Start);
@@ -1092,7 +1092,7 @@ void App::loop() {
                     GRRLIB_FreeTexture(tmpRing);
                 }
                 reloadAssets();
-                if (wantsExit) { running = false; return; }
+                if (wantsExit) { lv.shutdownImageLoader(); running = false; return; }
                 lv.reinitAfterPlayback(font, jpFont, cursorPointerTex, ringTex);
             } else if (!lv.pendingPlayUrl.empty()) {
                 SYS_Report("[DBG] runLibrary: entering runPlaySession\n");
@@ -1111,12 +1111,13 @@ void App::loop() {
                     SYS_Report("[DBG] runLibrary: skip reinit (BGM already running)\n");
                 }
                 SYS_Report("[DBG] runLibrary: reloadAssets done\n");
-                if (wantsExit) { running = false; return; }
+                if (wantsExit) { lv.shutdownImageLoader(); running = false; return; }
                 lv.reinitAfterPlayback(font, jpFont, cursorPointerTex, ringTex);
             } else {
                 break; // user navigated back (B from libraries grid) — no play requested
             }
         }
+        lv.shutdownImageLoader();
     };
 
     /* ---- Helper: open ConnectView, on success add/update profile + library ---- */
@@ -1414,6 +1415,8 @@ void App::loadSettings() {
             jellyfinClient.sslVerify = atoi(val) != 0;
         } else if (strcmp(key, "music_enabled") == 0) {
             musicEnabled = atoi(val) != 0;
+        } else if (strcmp(key, "bg_image_loading") == 0) {
+            bgImageLoadingEnabled = atoi(val) != 0;
         } else if (strcmp(key, "profile_count") == 0) {
             profileCount = atoi(val);
             if (profileCount > 0 && profileCount <= 32) profiles.resize((size_t)profileCount);
@@ -1468,6 +1471,7 @@ void App::saveSettings() {
     if (!f) return;
     fprintf(f, "ssl_verify=%d\n",      jellyfinClient.sslVerify ? 1 : 0);
     fprintf(f, "music_enabled=%d\n",    musicEnabled ? 1 : 0);
+    fprintf(f, "bg_image_loading=%d\n", bgImageLoadingEnabled ? 1 : 0);
     fprintf(f, "profile_count=%d\n",   (int)profiles.size());
     for (int i = 0; i < (int)profiles.size(); i++) {
         const SavedProfile& p = profiles[i];
