@@ -3,10 +3,12 @@
 #include <ogc/if_config.h>
 #include <ogc/lwp_watchdog.h>
 #include <sys/filio.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <vector>
@@ -1099,6 +1101,62 @@ bool JellyfinClient::getAlbumsByArtist(const std::string& serverUrl,
 }
 
 // ---------------------------------------------------------------------------
+// Fetch bytes for `url`, transparently caching under cacheDir + cacheKey.
+// Cache hits (fresh within CACHE_TTL_SECONDS) skip the network entirely; misses
+// fetch normally and best-effort save the response for next time. Caching is
+// disabled (plain passthrough to httpRequest) when cacheDir is empty.
+// ---------------------------------------------------------------------------
+bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
+                                      const std::string& url,
+                                      const std::string& authToken,
+                                      std::string& outBytes) {
+    static const time_t CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
+    if (cacheDir.empty()) {
+        int status = httpRequest(url, "GET", "", "", authToken, outBytes);
+        return status == 200;
+    }
+
+    std::string path = cacheDir + cacheKey;
+
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        time_t age = time(nullptr) - st.st_mtime;
+        if (age >= 0 && age < CACHE_TTL_SECONDS) {
+            FILE* f = fopen(path.c_str(), "rb");
+            if (f) {
+                outBytes.clear();
+                outBytes.resize((size_t)st.st_size);
+                size_t nread = fread(&outBytes[0], 1, (size_t)st.st_size, f);
+                fclose(f);
+                if (nread > 0 && nread == (size_t)st.st_size) {
+                    SYS_Report("[imgcache] HIT key=%s path=%s\n", cacheKey.c_str(), path.c_str());
+                    return true;
+                }
+                outBytes.clear();
+            }
+        }
+    }
+
+    SYS_Report("[imgcache] MISS key=%s url=%s (fetching)\n", cacheKey.c_str(), url.c_str());
+    int status = httpRequest(url, "GET", "", "", authToken, outBytes);
+    if (status == 200 && !outBytes.empty()) {
+        FILE* f = fopen(path.c_str(), "wb");
+        if (f) {
+            size_t nwritten = fwrite(outBytes.data(), 1, outBytes.size(), f);
+            fclose(f);
+            if (nwritten == outBytes.size())
+                SYS_Report("[imgcache] SAVED key=%s bytes=%u\n", cacheKey.c_str(), (unsigned)outBytes.size());
+            else
+                SYS_Report("[imgcache] SAVE-FAILED key=%s (short write)\n", cacheKey.c_str());
+        } else {
+            SYS_Report("[imgcache] SAVE-FAILED key=%s (fopen)\n", cacheKey.c_str());
+        }
+    }
+    return status == 200;
+}
+
+// ---------------------------------------------------------------------------
 // Fetch raw bytes for an item's primary image (JPEG)
 // ---------------------------------------------------------------------------
 bool JellyfinClient::getItemImageBytes(const std::string& serverUrl,
@@ -1111,8 +1169,10 @@ bool JellyfinClient::getItemImageBytes(const std::string& serverUrl,
         "/Items/%s/Images/Primary?fillWidth=%d&fillHeight=%d&maxWidth=%d&maxHeight=%d&quality=82",
         itemId.c_str(), maxWidth, maxHeight, maxWidth, maxHeight);
     std::string url = serverUrl + qs;
-    int status = httpRequest(url, "GET", "", "", auth.accessToken, outBytes);
-    return status == 200;
+
+    char key[160];
+    snprintf(key, sizeof(key), "primary_%s_%dx%d.jpg", itemId.c_str(), maxWidth, maxHeight);
+    return fetchImageCached(key, url, auth.accessToken, outBytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,25 +1188,26 @@ bool JellyfinClient::getItemBackdropBytes(const std::string& serverUrl,
     char sizeqs[128];
     snprintf(sizeqs, sizeof(sizeqs),
              "?maxWidth=%d&maxHeight=%d&quality=82", maxWidth, maxHeight);
+    char key[160];
 
     if (item.type == "Episode") {
         // Episode still (Thumb)
         std::string url = serverUrl + "/Items/" + item.id + "/Images/Thumb" + sizeqs;
-        int st = httpRequest(url, "GET", "", "", auth.accessToken, outBytes);
-        if (st == 200 && !outBytes.empty()) return true;
+        snprintf(key, sizeof(key), "thumb_%s_%dx%d.jpg", item.id.c_str(), maxWidth, maxHeight);
+        if (fetchImageCached(key, url, auth.accessToken, outBytes) && !outBytes.empty()) return true;
         outBytes.clear();
         // Series backdrop
         if (!item.seriesId.empty()) {
             url = serverUrl + "/Items/" + item.seriesId + "/Images/Backdrop/0" + sizeqs;
-            st  = httpRequest(url, "GET", "", "", auth.accessToken, outBytes);
-            if (st == 200 && !outBytes.empty()) return true;
+            snprintf(key, sizeof(key), "backdrop_%s_%dx%d.jpg", item.seriesId.c_str(), maxWidth, maxHeight);
+            if (fetchImageCached(key, url, auth.accessToken, outBytes) && !outBytes.empty()) return true;
             outBytes.clear();
         }
     } else {
         // Movie / Series backdrop
         std::string url = serverUrl + "/Items/" + item.id + "/Images/Backdrop/0" + sizeqs;
-        int st = httpRequest(url, "GET", "", "", auth.accessToken, outBytes);
-        if (st == 200 && !outBytes.empty()) return true;
+        snprintf(key, sizeof(key), "backdrop_%s_%dx%d.jpg", item.id.c_str(), maxWidth, maxHeight);
+        if (fetchImageCached(key, url, auth.accessToken, outBytes) && !outBytes.empty()) return true;
         outBytes.clear();
     }
 

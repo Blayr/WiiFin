@@ -354,11 +354,24 @@ public:
 
     bool sslVerify = true;   // true = verify certificate (set false to allow self-signed)
 
+    // Directory to cache fetched image bytes in, e.g. "sd:/apps/WiiFin/cache/"
+    // (trailing slash). Empty = caching disabled (no writable device found).
+    std::string cacheDir;
+
 private:
     bool networkReady = false;
     std::string errMsg;
     std::string localIp_;   // set by initNetwork, used by discoverServers
     std::string localMask_;
+
+    // Fetch bytes for `url`, transparently caching under cacheDir + cacheKey.
+    // Falls back to a plain httpRequest() when cacheDir is empty. Cache hits skip
+    // the network entirely; cache misses fetch normally and best-effort save the
+    // response for next time (write failures are silent/non-fatal).
+    bool fetchImageCached(const std::string& cacheKey,
+                          const std::string& url,
+                          const std::string& authToken,
+                          std::string& outBytes);
 
     // Low-level HTTP/HTTPS: auto-detects scheme, returns HTTP status code
     int httpRequest(const std::string& url,
