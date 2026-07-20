@@ -675,18 +675,22 @@ void App::init(const char* argv0) {
     // mkdirp: create each component of `dir` (e.g. "sd:/apps/WiiFin") only
     // if the device supports mkdir_r.  mkdir() only creates one level, so we
     // walk forward from the first '/' after the device prefix.
+    // A path with no "device:" prefix (e.g. "/apps/WiiFin") targets whatever
+    // the default device is — skip the named-device capability check in that
+    // case and just attempt the mkdir()s directly.
     auto mkdirp = [](const std::string& dir) {
         const char* colon = strchr(dir.c_str(), ':');
-        if (!colon) return;
-        std::string devname(dir.c_str(), colon - dir.c_str());
-        bool devOk = false;
-        for (int j = 0; j < STD_MAX; j++) {
-            if (!devoptab_list[j] || !devoptab_list[j]->name) continue;
-            if (devname == devoptab_list[j]->name && devoptab_list[j]->mkdir_r) {
-                devOk = true; break;
+        if (colon) {
+            std::string devname(dir.c_str(), colon - dir.c_str());
+            bool devOk = false;
+            for (int j = 0; j < STD_MAX; j++) {
+                if (!devoptab_list[j] || !devoptab_list[j]->name) continue;
+                if (devname == devoptab_list[j]->name && devoptab_list[j]->mkdir_r) {
+                    devOk = true; break;
+                }
             }
+            if (!devOk) return;
         }
-        if (!devOk) return;
         // Walk each path component and mkdir incrementally
         std::string cur;
         const char* p = dir.c_str();
@@ -716,6 +720,16 @@ void App::init(const char* argv0) {
         errno = 0;
         FILE* f = fopen(probes[i], "a");
         if (f) { fclose(f); settingsPath = probes[i]; break; }
+    }
+
+    // Image cache lives alongside wiifin.cfg on whichever device won the probe above.
+    if (!settingsPath.empty()) {
+        size_t slash = settingsPath.rfind('/');
+        if (slash != std::string::npos) {
+            std::string cacheDirNoSlash = settingsPath.substr(0, slash) + "/cache";
+            mkdirp(cacheDirNoSlash);
+            jellyfinClient.cacheDir = cacheDirNoSlash + "/";
+        }
     }
 
     loadSettings();
