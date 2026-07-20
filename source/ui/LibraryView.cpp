@@ -548,6 +548,16 @@ void LibraryView::releaseForPlayback() {
      * they are lightweight metadata (a few KB total) and preserving them
      * lets reinitAfterPlayback() skip the network refetch, going straight
      * to PostersLoad instead of LibsReady → ItemsInit → ItemsLoad. */
+
+    // Fully stop (not just cancel) the background loader threads -- each
+    // holds a heap-allocated 64KB worker stack that would otherwise sit
+    // allocated for the whole playback session, eating into the same
+    // contiguous-heap budget MPlayer needs (see comment above). Restarted
+    // in reinitAfterPlayback() once that pressure is gone.
+    if (asyncPosterLoadingEnabled) {
+        posterLoader.shutdown();
+        detailLoader.shutdown();
+    }
 }
 
 void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
@@ -560,6 +570,12 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
     // Reload the user icon (freed by releaseForPlayback → freePosters path or destructor)
     if (!userIconTex)
         userIconTex = GRRLIB_LoadTexture(data_icon_user_png);
+
+    // Restart the background loader threads stopped in releaseForPlayback().
+    if (asyncPosterLoadingEnabled) {
+        posterLoader.init(&client, &serverUrl, &auth);
+        detailLoader.init(&client, &serverUrl, &auth);
+    }
 
     // Reset pending play fields
     pendingPlayUrl.clear();
