@@ -345,12 +345,16 @@ public:
                               const JellyfinAuth& auth,
                               const std::string& playSessionId);
 
-    // Search items across all libraries (Movie, Series, MusicAlbum, Audio)
+    // Search items across all libraries. `itemTypes` is a comma-separated
+    // Jellyfin item-type filter (e.g. "Series,Movie" to restrict to those
+    // types only) -- defaults to everything searchable.
     bool searchItems(const std::string& serverUrl,
                      const JellyfinAuth& auth,
                      const std::string& searchTerm,
                      int limit,
-                     std::vector<JellyfinItem>& out);
+                     std::vector<JellyfinItem>& out,
+                     const std::string& itemTypes =
+                         "Movie,Series,Episode,MusicAlbum,Audio,MusicArtist,BoxSet,Playlist");
 
     bool sslVerify = true;   // true = verify certificate (set false to allow self-signed)
 

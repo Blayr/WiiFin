@@ -2420,7 +2420,8 @@ bool JellyfinClient::searchItems(const std::string& serverUrl,
                                   const JellyfinAuth& auth,
                                   const std::string& searchTerm,
                                   int limit,
-                                  std::vector<JellyfinItem>& out) {
+                                  std::vector<JellyfinItem>& out,
+                                  const std::string& itemTypes) {
     // Percent-encode the search term (printable ASCII only)
     std::string encoded;
     encoded.reserve(searchTerm.size() * 3);
@@ -2441,8 +2442,8 @@ bool JellyfinClient::searchItems(const std::string& serverUrl,
         "?searchTerm=%s"
         "&userId=%s"
         "&limit=%d"
-        "&includeItemTypes=Movie,Series,Episode,MusicAlbum,Audio,MusicArtist,BoxSet,Playlist",
-        encoded.c_str(), auth.userId.c_str(), limit);
+        "&includeItemTypes=%s",
+        encoded.c_str(), auth.userId.c_str(), limit, itemTypes.c_str());
 
     std::string url  = serverUrl + qs;
     std::string resp;

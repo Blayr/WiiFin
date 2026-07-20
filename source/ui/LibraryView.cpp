@@ -3979,8 +3979,19 @@ void LibraryView::performSearch() {
     searchResults.clear();
     bool ok = false; std::string err;
     runWithLoading([&]() {
-        ok = client.searchItems(serverUrl, auth, searchQuery, 50, searchResults);
-        if (!ok) err = client.lastError();
+        // Two passes so shows/movies whose *name* matches always surface above
+        // individual episodes that merely mention the term -- Jellyfin's own
+        // /Search/Hints relevance otherwise happily buries e.g. the "Dragon
+        // Ball Z" series entry under a hundred loose episode-title matches.
+        std::vector<JellyfinItem> topLevel, rest;
+        ok = client.searchItems(serverUrl, auth, searchQuery, 20, topLevel,
+                                "Series,Movie,BoxSet,MusicAlbum,MusicArtist");
+        if (!ok) { err = client.lastError(); return; }
+        ok = client.searchItems(serverUrl, auth, searchQuery, 30, rest,
+                                "Episode,Audio,Playlist");
+        if (!ok) { err = client.lastError(); return; }
+        searchResults = std::move(topLevel);
+        searchResults.insert(searchResults.end(), rest.begin(), rest.end());
     });
     if (!ok) { errMsg = err; state = State::Error; return; }
     searchSel = 0;
