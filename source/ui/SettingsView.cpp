@@ -2,7 +2,7 @@
 #include "../input/Input.h"
 #include "../version.h"
 
-static const int NUM_SETTINGS = 2; // extensible
+static const int NUM_SETTINGS = 3; // extensible
 
 SettingsView::SettingsView(GRRLIB_texImg* btn, GRRLIB_ttfFont* f, JellyfinClient& c, bool& music)
     : btnTex(btn), font(f), client(c), musicEnabled(music) {}
@@ -44,6 +44,33 @@ void SettingsView::drawToggleRow(int x, int y, int w,
     GRRLIB_PrintfTTF(px + 10, py + 4, font, valStr, 16, 0xFFFFFFFF);
 }
 
+// A one-shot action row (as opposed to an ON/OFF toggle) -- e.g. "Clear
+// Image Cache". Pressing A fires the action immediately; there's no
+// persistent value to show, just a "GO" pill and a description that the
+// caller can update afterward to reflect the result. Once fired (`done`),
+// the pill greys out to signal there's nothing left to do until Settings
+// is reopened (cacheClearedCount resets then).
+void SettingsView::drawActionRow(int x, int y, int w,
+                                  const char* label, const char* desc,
+                                  bool focused, bool done) {
+    u32 bg = focused ? 0x1E3A5FCC : 0x111827AA;
+    GRRLIB_Rectangle(x, y, w, 52, bg, 1);
+    u32 border = focused ? 0x4499FFFF : 0x2A3A4AFF;
+    GRRLIB_Rectangle(x, y, w, 2,  border, 1);
+    GRRLIB_Rectangle(x, y+50, w, 2, border, 1);
+
+    GRRLIB_PrintfTTF(x+14, y+7,  font, label, 18, 0xEEEEEEFF);
+    GRRLIB_PrintfTTF(x+14, y+29, font, desc,  13, 0x778899FF);
+
+    const char* actStr = "GO";
+    u32 pillCol = done ? 0x555566FF : 0x3388CCFF;
+    int pw = GRRLIB_WidthTTF(font, actStr, 16) + 20;
+    int px = x + w - pw - 14;
+    int py = y + 14;
+    GRRLIB_Rectangle(px, py, pw, 24, pillCol, 1);
+    GRRLIB_PrintfTTF(px + 10, py + 4, font, actStr, 16, 0xFFFFFFFF);
+}
+
 // ---------------------------------------------------------------
 bool SettingsView::update(ir_t& ir) {
     bool aPressed = Input::isAJustPressed();
@@ -70,6 +97,7 @@ bool SettingsView::update(ir_t& ir) {
         switch (selectedIndex) {
             case 0: client.sslVerify  = !client.sslVerify;  break;
             case 1: musicEnabled      = !musicEnabled;       break;
+            case 2: cacheClearedCount = client.clearImageCache(); break;
         }
     }
     // IR click
@@ -80,6 +108,7 @@ bool SettingsView::update(ir_t& ir) {
                 switch (i) {
                     case 0: client.sslVerify  = !client.sslVerify;  break;
                     case 1: musicEnabled      = !musicEnabled;       break;
+                    case 2: cacheClearedCount = client.clearImageCache(); break;
                 }
             }
         }
@@ -107,6 +136,14 @@ void SettingsView::render(ir_t& ir) {
         "Play background music in menus",
         musicEnabled, selectedIndex == 1);
 
+    char cacheDesc[64];
+    if (cacheClearedCount >= 0)
+        snprintf(cacheDesc, sizeof(cacheDesc), "Cleared %d cached image(s)", cacheClearedCount);
+    else
+        snprintf(cacheDesc, sizeof(cacheDesc), "Frees SD card space by deleting cached posters/backdrops");
+    drawActionRow(60, 252, 520,
+        "Clear Image Cache", cacheDesc, selectedIndex == 2, cacheClearedCount >= 0);
+
     // Credits block
     GRRLIB_Rectangle(60, 390, 520, 1, 0x4499FF44, 1);
     const char* version = "WiiFin v" WIIFIN_VERSION;
@@ -117,7 +154,7 @@ void SettingsView::render(ir_t& ir) {
     GRRLIB_PrintfTTF((640-cw)/2, 422, font, credits, 12, 0x556677FF);
 
     // Footer
-    const char* footer = "A: Toggle   B: Back";
+    const char* footer = "A: Toggle/Select   B: Back";
     int fw = GRRLIB_WidthTTF(font, footer, 14);
     GRRLIB_PrintfTTF((640-fw)/2, 458, font, footer, 14, 0x778899FF);
 }
