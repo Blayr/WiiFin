@@ -5,6 +5,7 @@ extern unsigned char data_icon_user_png[];
 extern unsigned int  data_icon_user_png_len;
 #include "../jellyfin/JellyfinClient.h"
 #include "../core/SoundFX.h"
+#include "../core/I18n.h"
 #include <ogcsys.h>
 #include <cmath>
 #include "../core/Utils.h"
@@ -2580,7 +2581,7 @@ void LibraryView::render(ir_t& ir) {
                                 i == continueSel && actRow == 0, true,
                                 cwDisplayMain[i], cwDisplaySub[i]);
             } else {
-                GRRLIB_PrintfTTF(ACT_X0 + 20, ACT_ROW0_Y + 40, font, "Rien en cours", 14, 0x556677FF);
+                GRRLIB_PrintfTTF(ACT_X0 + 20, ACT_ROW0_Y + 40, font, I18n::t(I18n::Key::NoneInProgress), 14, 0x556677FF);
             }
 
             // Next Up row
@@ -3063,7 +3064,7 @@ void LibraryView::render(ir_t& ir) {
                 int cw = (int)GRRLIB_WidthTTF(font, countStr, 15);
                 GRRLIB_PrintfTTF(620 - cw, 18, font, countStr, 15, 0x889AABFF);
             } else {
-                GRRLIB_PrintfTTF(520, 18, font, "Pas de favoris", 15, 0x889AABFF);
+                GRRLIB_PrintfTTF(520, 18, font, I18n::t(I18n::Key::NoFavorites), 15, 0x889AABFF);
             }
         }
 
@@ -3263,7 +3264,7 @@ void LibraryView::render(ir_t& ir) {
             drawRowArrow(true,  SG_ROW0_Y, movieSuggestContOff > 0);
             drawRowArrow(false, SG_ROW0_Y, movieSuggestContOff + SUGG_VISIBLE < nc);
         } else {
-            GRRLIB_PrintfTTF(SG_X0 + 20, SG_ROW0_Y + 60, font, "Aucun film en cours", 14, 0x556677FF);
+            GRRLIB_PrintfTTF(SG_X0 + 20, SG_ROW0_Y + 60, font, I18n::t(I18n::Key::NoMovieInProgress), 14, 0x556677FF);
         }
 
         // Row 1 — Recently Added
@@ -3776,8 +3777,9 @@ void LibraryView::drawDetailView(ir_t& ir) {
         GRRLIB_Rectangle(cx - bw/2 - 1, cy + bh/2 - 1, bw + 2, 2,     0xFFFFFFCC, 1);
         GRRLIB_Rectangle(cx - bw/2 - 1, cy - bh/2 - 1, 2,     bh + 2, 0xFFFFFFCC, 1);
         GRRLIB_Rectangle(cx + bw/2 - 1, cy - bh/2 - 1, 2,     bh + 2, 0xFFFFFFCC, 1);
-        int tw = GRRLIB_WidthTTF(font, "\xe2\x96\xb6 Lire", 16);
-        GRRLIB_PrintfTTF(cx - tw/2, cy - 10, font, "\xe2\x96\xb6 Lire", 16, 0xFFFFFFFF);
+        const char* playLabel = I18n::t(I18n::Key::Play);
+        int tw = GRRLIB_WidthTTF(font, playLabel, 16);
+        GRRLIB_PrintfTTF(cx - tw/2, cy - 10, font, playLabel, 16, 0xFFFFFFFF);
     }
 
     // ---- Title ----
