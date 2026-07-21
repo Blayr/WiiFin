@@ -3,6 +3,7 @@
 #include "Input.h"
 #include "MusicBGM.h"
 #include "SoundFX.h"
+#include "I18n.h"
 #include "../ui/ConnectView.h"
 #include "../ui/MusicPlayerView.h"
 #include "../ui/ProfileView.h"
@@ -736,6 +737,7 @@ void App::init(const char* argv0) {
     loadSettings();
     MusicBGM::init(musicEnabled);
     SoundFX::init();
+    I18n::init();
 }
 
 /* -----------------------------------------------------------------------
