@@ -362,6 +362,11 @@ public:
     // (trailing slash). Empty = caching disabled (no writable device found).
     std::string cacheDir;
 
+    // Deletes every file under cacheDir (cached poster/backdrop images).
+    // Main-thread-safe, no network I/O. Returns the number of files removed,
+    // or -1 if cacheDir is empty (caching disabled) or couldn't be opened.
+    int clearImageCache();
+
 private:
     bool networkReady = false;
     std::string errMsg;
