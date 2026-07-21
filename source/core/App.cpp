@@ -160,8 +160,9 @@ static void sanitizeTrackLabel(const char* src, char* dst, size_t dstSize)
  *   - fetching intro timestamps (for TV episodes)
  *   - the next/prev/audio/sub restart loop
  *
- * Returns true if the user chose "Wii Menu" from the HOME overlay,
- * false for all other stop reasons (EOF, error, back to library).
+ * Returns true if the user chose to exit from the HOME overlay (Wii Menu,
+ * Reset, or HBC), false for all other stop reasons (EOF, error, back to
+ * library).
  * GRRLIB must be active on entry; the function temporarily exits/re-inits
  * GRRLIB around each wii_player_play() call.
  * ----------------------------------------------------------------------- */
@@ -422,7 +423,7 @@ static bool runPlaySession(JellyfinClient& client,
         if (reason == PLAYER_STOP_HOME) {
             /* HOME was pressed during playback.  Show the clean GRRLIB HOME
              * overlay (same as the rest of the app).  B = resume playback;
-             * Wii Menu / Reset = exit as usual. */
+             * Wii Menu / Reset / HBC = exit as usual. */
             long long suspendTicks = startTimeTicks +
                                      (long long)(g_mplayer_time_pos * 10000000.0f);
 
@@ -459,7 +460,7 @@ static bool runPlaySession(JellyfinClient& client,
                                                  playSessionId, suspendTicks);
                 return false;
             } else {
-                /* User chose Wii Menu or Reset — report and clean up. */
+                /* User chose Wii Menu, Reset, or HBC — report and clean up. */
                 if (suspendTicks > 0)
                     client.reportPlaybackStopped(serverUrl, auth, itemId, mediaSourceId,
                                                  playSessionId, suspendTicks);
@@ -751,16 +752,17 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
 {
     ir_t ir;
     ir.valid = false;
-        int   hmSel     = 0;    /* 0 = Wii Menu, 1 = Reset */
+        int   hmSel     = 0;    /* 0 = Wii Menu, 1 = Reset, 2 = HBC */
         int   state     = 0;    /* 0 = home menu, 1 = confirm popup */
         int   confirmFor = 0;   /* which button triggered the popup */
 
         /* Main button layout */
-        const int BTN_W = 230, BTN_H = 80;
+        const int BTN_W = 170, BTN_H = 80;
         const int BTN_Y = 195;
-        const int B0X   =  65;
-        const int B1X   = 345;
-        float bcx[2] = { B0X + BTN_W * 0.5f, B1X + BTN_W * 0.5f };
+        const int B0X   =  35;
+        const int B1X   = 235;
+        const int B2X   = 435;
+        float bcx[3] = { B0X + BTN_W * 0.5f, B1X + BTN_W * 0.5f, B2X + BTN_W * 0.5f };
         float bcy    = BTN_Y + BTN_H * 0.5f;
 
         /* Confirmation dialog layout — centred on 640×480 */
@@ -776,7 +778,7 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
 
         /* Animation state */
         float openAnim      = 0.0f;
-        float hoverSc[2]    = { 1.0f, 1.0f };
+        float hoverSc[3]    = { 1.0f, 1.0f, 1.0f };
         float popAnim       = 0.0f;
         int   popSel        = 1;             /* default: "No" */
         float popHoverSc[2] = { 1.0f, 1.0f };
@@ -806,7 +808,7 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
                 if (Input::isBPressed()) { if (musicEnabled) MusicBGM::resume(); return false; }
 
                 if (ir.valid) {
-                    for (int i = 0; i < 2; i++) {
+                    for (int i = 0; i < 3; i++) {
                         float hw = BTN_W * hoverSc[i] * 0.5f;
                         float hh = BTN_H * hoverSc[i] * 0.5f;
                         if (irX >= bcx[i] - hw && irX <= bcx[i] + hw &&
@@ -820,15 +822,15 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
                 prevHoverMain = hover;
 
                 if (Input::isAJustPressed()) {
-                    SoundFX::play(SoundFX::FX::Start); /* clicking Wii Menu / Reset */
+                    SoundFX::play(SoundFX::FX::Start); /* clicking Wii Menu / Reset / HBC */
                     confirmFor = (hover >= 0) ? hover : hmSel;
                     state      = 1;
                     popAnim    = 0.0f;
                     popSel     = 1;
                 }
-                if (Input::isLeftPressed()  || Input::isUpPressed())   hmSel = 0;
-                if (Input::isRightPressed() || Input::isDownPressed())  hmSel = 1;
-                for (int i = 0; i < 2; i++) {
+                if (Input::isLeftPressed()  || Input::isUpPressed())   hmSel = (hmSel + 2) % 3;
+                if (Input::isRightPressed() || Input::isDownPressed())  hmSel = (hmSel + 1) % 3;
+                for (int i = 0; i < 3; i++) {
                     float t = (hover == i) ? 1.10f : 1.0f;
                     hoverSc[i] += (t - hoverSc[i]) * 0.18f;
                 }
@@ -852,7 +854,10 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
                     if (sel == 0) { /* Yes */
                         SoundFX::play(SoundFX::FX::MenuExit);
                         SoundFX::waitDone(SoundFX::FX::MenuExit);
-                        if (confirmFor == 1) s_restartApp = true;
+                        /* Reset and HBC both return control to the Homebrew
+                         * Channel via exit(0) (see the final exit path below)
+                         * — only "Wii Menu" takes the SYS_RETURNTOMENU path. */
+                        if (confirmFor == 1 || confirmFor == 2) s_restartApp = true;
                         return true;
                     } else {        /* No */
                         SoundFX::play(SoundFX::FX::Back);
@@ -926,7 +931,7 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
             }
 
             if (btnTex) {
-                for (int i = 0; i < 2; i++) {
+                for (int i = 0; i < 3; i++) {
                     float sc  = hoverSc[i];
                     float dw  = BTN_W * sc;
                     float dh  = BTN_H * sc;
@@ -943,7 +948,7 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
                     GRRLIB_DrawImg(dx, dy, btnTex, 0, tsx, tsy, (tint << 8) | fa);
 
                     if (font && fa > 8) {
-                        const char* lbl = (i == 0) ? "Wii Menu" : "Reset";
+                        const char* lbl = (i == 0) ? "Wii Menu" : (i == 1) ? "Reset" : "HBC";
                         int fs = (int)(22 * sc);
                         if (fs < 12) fs = 12;
                         int tw = GRRLIB_WidthTTF(font, lbl, fs);
@@ -978,7 +983,9 @@ static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
                 if (font && da > 8) {
                     const char* line1 = (confirmFor == 0)
                         ? "Return to the Wii Menu?"
-                        : "Reset the application?";
+                        : (confirmFor == 1)
+                        ? "Reset the application?"
+                        : "Return to the Homebrew Channel?";
                     const char* line2 = "(Anything not saved will be lost.)";
                     int l1w = GRRLIB_WidthTTF(font, line1, 20);
                     int l2w = GRRLIB_WidthTTF(font, line2, 14);
