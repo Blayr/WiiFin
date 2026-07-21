@@ -29,3 +29,12 @@ Thumbs.db
 # Bundled third-party static libs (built locally; not committed to source control)
 libs/mbedtls/lib/
 libs/mplayer-ce-build/
+
+# Local dev notes with secrets/credentials — never commit
+LOCAL_NOTES.md
+
+# Runtime logs from dev tooling (e.g. tools/dev/throttle_proxy.py)
+tools/dev/logs/
+
+# Host-arch binaries built by dev tooling (e.g. wiiload) -- rebuild per machine
+tools/dev/bin/

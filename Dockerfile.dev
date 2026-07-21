@@ -1,0 +1,46 @@
+# WiiFin development image.
+#
+# Bundles the devkitPro/devkitPPC Wii toolchain plus the extra libraries
+# WiiFin needs that aren't available as devkitPro pacman packages:
+# GRRLIB and libpngu (both distributed as source-only). mbedTLS is
+# deliberately NOT built here — it depends on WiiFin's project-specific
+# mbedtls_config.h, so it's built into the checkout itself by
+# tools/dev/build_mbedtls.sh (see DEV_SETUP.md).
+#
+# Build:   docker build -f Dockerfile.dev -t wiifin-dev .
+# Use:     tools/dev/docker-build.sh   (compiles WiiFin.dol)
+#          tools/dev/docker-shell.sh   (interactive shell for debugging)
+FROM devkitpro/devkitppc:latest
+
+# xxd: Makefile embeds assets as C arrays via `xxd -i`.
+# python3-jsonschema / python3-jinja2: only needed transiently to build
+# GRRLIB/mbedTLS below (mbedTLS's codegen scripts require them at build
+# time); kept installed in case dependencies are rebuilt inside a running
+# container.
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+       xxd python3-jsonschema python3-jinja2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# GRRLIB + libpngu: no devkitPro pacman package exists for either (per
+# GRRLIB's own README they are "supplied as source code"). Build once here
+# and `make install` drops the .a/headers into /opt/devkitpro/portlibs,
+# where WiiFin's own Makefile already expects to find them via
+# -lgrrlib -lpngu.
+#
+# Pinned (not `--depth 1` off a moving branch tip) plus patched — see
+# libs/grrlib/grrlib_reentrant_init_patch.diff for the full bug writeup:
+# GRRLIB_Init()/GRRLIB_Exit() are one-shot by design, but WiiFin calls them
+# repeatedly across every video play/stop cycle, which after the first
+# cycle left freed xfb/gp_fifo pointers and a destroyed FreeType instance
+# silently still in use (real-hardware-only use-after-free — the intermittent
+# post-playback hang/crash chased down in this fork's history).
+COPY libs/grrlib/grrlib_reentrant_init_patch.diff /tmp/grrlib_reentrant_init_patch.diff
+RUN git clone https://github.com/GRRLIB/GRRLIB.git /tmp/GRRLIB \
+    && git -C /tmp/GRRLIB checkout 1945955f941ff945f282c0993c1f71b722e6310a \
+    && patch -p1 -d /tmp/GRRLIB < /tmp/grrlib_reentrant_init_patch.diff \
+    && make -C /tmp/GRRLIB/GRRLIB/lib/pngu clean all install \
+    && make -C /tmp/GRRLIB/GRRLIB/GRRLIB clean all install \
+    && rm -rf /tmp/GRRLIB /tmp/grrlib_reentrant_init_patch.diff
+
+WORKDIR /project

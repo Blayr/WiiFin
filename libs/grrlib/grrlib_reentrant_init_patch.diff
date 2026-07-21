@@ -1,0 +1,71 @@
+================================================================================
+  WiiFin ← GRRLIB patch: reentrant GRRLIB_Init()/GRRLIB_Exit()
+================================================================================
+  GRRLIB pinned to commit 1945955f941ff945f282c0993c1f71b722e6310a
+  (https://github.com/GRRLIB/GRRLIB), applied to
+  GRRLIB/GRRLIB/GRRLIB_core.c during the Docker image build (Dockerfile.dev)
+  before `make install`.
+
+  Background
+  ----------
+  WiiFin hands GX ownership back and forth between GRRLIB (menus/UI) and
+  MPlayer CE (video playback) on every play/stop cycle: when playback starts,
+  MPlayer's mpgxInit() calls back into WiiFin's g_wiifin_grrlib_cleanup_cb,
+  which calls GRRLIB_Exit(); when playback stops, WiiFin calls GRRLIB_Init()
+  again to reclaim GX for the UI (see source/player/WiiPlayer.h's own
+  documented contract: "the caller MUST call GRRLIB_Init() to reclaim the
+  GX"). This is original, intentional design -- confirmed present verbatim
+  in the v0.1.1 release source, not something introduced by this fork.
+
+  The problem: GRRLIB_Init()/GRRLIB_Exit() (GRRLIB_core.c) are guarded to
+  only ever do real work ONCE, for the lifetime of the process --
+  `GRRLIB_Init()` doc comment says "Call this once at the beginning your
+  code", `GRRLIB_Exit()`'s says "Ensure this function is only ever called
+  once". This guard logic dates to GRRLIB commit ccb6ec7 (2009) -- it is
+  not a recent regression, and was already present in whatever GRRLIB
+  build the original release was compiled against.
+
+  In practice: the FIRST time video playback stops, GRRLIB_Exit() runs for
+  real -- frees xfb[0]/xfb[1]/gp_fifo, destroys the one global FreeType
+  library handle (GRRLIB_ExitTTF() -> FT_Done_FreeType()). The very next
+  GRRLIB_Init() call is then a silent no-op (`is_setup` is already true
+  from app startup), so none of xfb[]/gp_fifo/FreeType ever get
+  reallocated. From that point on, WiiFin is issuing GX/FreeType calls
+  against freed pointers and a destroyed FreeType instance -- a genuine
+  use-after-free. Symptom on real hardware only (Dolphin's GX/timing
+  emulation doesn't reliably reproduce it): intermittent hang inside
+  GX_DrawDone() (GRRLIB_Render()) or a crash inside font/texture reload,
+  shortly after the first video is stopped. Location shifts between builds
+  because it's memory corruption, not a fixed code-path bug.
+
+  Fix
+  ---
+  Rework the one-shot guards so repeated Init/Exit cycles behave correctly:
+  drop GRRLIB_Exit()'s separate function-local `done` static and its
+  `is_setup == false` OR-condition, and have GRRLIB_Exit() itself clear
+  `is_setup` at the point it used to set `done = true`. GRRLIB_Init()'s own
+  `if (is_setup == true) return 0;` guard is untouched -- it now correctly
+  re-runs the full setup (video mode, xfb allocation, GX pipeline config,
+  TTF, system font) every time GRRLIB_Exit() has run since the last Init,
+  exactly the semantics WiiFin's playback-transition code already assumed.
+
+  None of the actual setup/teardown logic in either function is touched by
+  this patch -- only the guard conditions controlling whether that logic
+  runs.
+
+--- a/GRRLIB/GRRLIB/GRRLIB_core.c
++++ b/GRRLIB/GRRLIB/GRRLIB_core.c
+@@ -225,11 +225,10 @@
+  * and only if the setup function has been called.
+  */
+ void  GRRLIB_Exit (void) {
+-    static bool done = false;
+-    if (done == true || is_setup == false) {
++    if (is_setup == false) {
+         return;
+     }
+-    done = true;
++    is_setup = false;
+
+     // Allow write access to the full screen
+     GX_SetClipMode( GX_CLIP_DISABLE );
