@@ -722,14 +722,22 @@ void App::init(const char* argv0) {
         if (f) { fclose(f); settingsPath = probes[i]; break; }
     }
 
-    // Image cache lives alongside wiifin.cfg on whichever device won the probe above.
-    if (!settingsPath.empty()) {
-        size_t slash = settingsPath.rfind('/');
-        if (slash != std::string::npos) {
-            std::string cacheDirNoSlash = settingsPath.substr(0, slash) + "/cache";
-            mkdirp(cacheDirNoSlash);
-            jellyfinClient.cacheDir = cacheDirNoSlash + "/";
+    // Image cache is SD-card-only, unlike wiifin.cfg above (which falls back
+    // across USB/other devices for the sake of always having *somewhere* to
+    // save settings). A disposable multi-MB JPEG cache isn't worth writing
+    // to whatever device happened to win that probe -- "sd" specifically
+    // present and writable is a simpler, more predictable condition.
+    bool sdPresent = false;
+    for (int j = 0; j < STD_MAX; j++) {
+        if (devoptab_list[j] && devoptab_list[j]->name &&
+            strcmp(devoptab_list[j]->name, "sd") == 0 && devoptab_list[j]->mkdir_r) {
+            sdPresent = true;
+            break;
         }
+    }
+    if (sdPresent) {
+        mkdirp("sd:/apps/WiiFin/cache");
+        jellyfinClient.cacheDir = "sd:/apps/WiiFin/cache/";
     }
 
     loadSettings();
