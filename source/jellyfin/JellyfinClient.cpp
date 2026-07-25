@@ -4,6 +4,7 @@
 #include <ogc/lwp_watchdog.h>
 #include <sys/filio.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1154,6 +1155,26 @@ bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
         }
     }
     return status == 200;
+}
+
+int JellyfinClient::clearImageCache() {
+    if (cacheDir.empty()) return -1;
+
+    DIR* dir = opendir(cacheDir.c_str());
+    if (!dir) return -1;
+
+    int removed = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        std::string path = cacheDir + entry->d_name;
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0 || S_ISDIR(st.st_mode)) continue;
+        if (unlink(path.c_str()) == 0) removed++;
+    }
+    closedir(dir);
+    SYS_Report("[imgcache] cleared %d file(s) from %s\n", removed, cacheDir.c_str());
+    return removed;
 }
 
 // ---------------------------------------------------------------------------
