@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <time.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <vector>
@@ -1103,16 +1102,15 @@ bool JellyfinClient::getAlbumsByArtist(const std::string& serverUrl,
 
 // ---------------------------------------------------------------------------
 // Fetch bytes for `url`, transparently caching under cacheDir + cacheKey.
-// Cache hits (fresh within CACHE_TTL_SECONDS) skip the network entirely; misses
-// fetch normally and best-effort save the response for next time. Caching is
-// disabled (plain passthrough to httpRequest) when cacheDir is empty.
+// Cache hits skip the network entirely and never expire on their own --
+// Settings' "Clear Image Cache" action is the only way entries go away.
+// Misses fetch normally and best-effort save the response for next time.
+// Caching is disabled (plain passthrough to httpRequest) when cacheDir is empty.
 // ---------------------------------------------------------------------------
 bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
                                       const std::string& url,
                                       const std::string& authToken,
                                       std::string& outBytes) {
-    static const time_t CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
-
     if (cacheDir.empty()) {
         int status = httpRequest(url, "GET", "", "", authToken, outBytes);
         return status == 200;
@@ -1122,20 +1120,17 @@ bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
 
     struct stat st;
     if (stat(path.c_str(), &st) == 0) {
-        time_t age = time(nullptr) - st.st_mtime;
-        if (age >= 0 && age < CACHE_TTL_SECONDS) {
-            FILE* f = fopen(path.c_str(), "rb");
-            if (f) {
-                outBytes.clear();
-                outBytes.resize((size_t)st.st_size);
-                size_t nread = fread(&outBytes[0], 1, (size_t)st.st_size, f);
-                fclose(f);
-                if (nread > 0 && nread == (size_t)st.st_size) {
-                    SYS_Report("[imgcache] HIT key=%s path=%s\n", cacheKey.c_str(), path.c_str());
-                    return true;
-                }
-                outBytes.clear();
+        FILE* f = fopen(path.c_str(), "rb");
+        if (f) {
+            outBytes.clear();
+            outBytes.resize((size_t)st.st_size);
+            size_t nread = fread(&outBytes[0], 1, (size_t)st.st_size, f);
+            fclose(f);
+            if (nread > 0 && nread == (size_t)st.st_size) {
+                SYS_Report("[imgcache] HIT key=%s path=%s\n", cacheKey.c_str(), path.c_str());
+                return true;
             }
+            outBytes.clear();
         }
     }
 
