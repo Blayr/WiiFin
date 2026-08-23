@@ -724,14 +724,30 @@ void App::init(const char* argv0) {
         if (f) { fclose(f); settingsPath = probes[i]; break; }
     }
 
-    // Image cache lives alongside wiifin.cfg on whichever device won the probe above.
-    if (!settingsPath.empty()) {
-        size_t slash = settingsPath.rfind('/');
-        if (slash != std::string::npos) {
-            std::string cacheDirNoSlash = settingsPath.substr(0, slash) + "/cache";
-            mkdirp(cacheDirNoSlash);
-            jellyfinClient.cacheDir = cacheDirNoSlash + "/";
+    // Image cache goes on removable media only -- SD card or USB storage,
+    // never the Wii's internal storage, which is tiny and not something a
+    // disposable multi-MB JPEG cache should compete for space on.
+    auto deviceMounted = [](const char* name) {
+        for (int j = 0; j < STD_MAX; j++) {
+            if (devoptab_list[j] && devoptab_list[j]->name &&
+                strcmp(devoptab_list[j]->name, name) == 0 && devoptab_list[j]->mkdir_r)
+                return true;
         }
+        return false;
+    };
+
+    // Prefer whichever device wiifin.cfg landed on above, so cache and
+    // config live together -- but only if it's SD or USB.
+    // Otherwise default to SD if present.
+    std::string cacheDevice;
+    size_t colon = settingsPath.find(':');
+    if (colon != std::string::npos) cacheDevice = settingsPath.substr(0, colon);
+    if (cacheDevice != "sd" && cacheDevice != "usb") cacheDevice.clear();
+    if (cacheDevice.empty() && deviceMounted("sd"))  cacheDevice = "sd";
+
+    if (!cacheDevice.empty()) {
+        mkdirp(cacheDevice + ":/apps/WiiFin/cache");
+        jellyfinClient.cacheDir = cacheDevice + ":/apps/WiiFin/cache/";
     }
 
     loadSettings();

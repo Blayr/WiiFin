@@ -48,27 +48,31 @@ void SettingsView::drawToggleRow(int x, int y, int w,
 // Image Cache". Pressing A fires the action immediately; there's no
 // persistent value to show, just a "GO" pill and a description that the
 // caller can update afterward to reflect the result. Once fired (`done`),
-// the pill greys out to signal there's nothing left to do until Settings
-// is reopened (cacheClearedCount resets then).
+// the row stops reacting to focus (no highlight box) and the pill greys out
+// and reads "DONE" so it reads as inert/unclickable -- matches update()'s
+// case 2, which stops re-firing the action once cacheClearedCount is set.
+// Nothing re-arms it until Settings is reopened (cacheClearedCount resets).
 void SettingsView::drawActionRow(int x, int y, int w,
                                   const char* label, const char* desc,
                                   bool focused, bool done) {
-    u32 bg = focused ? 0x1E3A5FCC : 0x111827AA;
+    bool highlight = focused && !done;
+    u32 bg = highlight ? 0x1E3A5FCC : 0x111827AA;
     GRRLIB_Rectangle(x, y, w, 52, bg, 1);
-    u32 border = focused ? 0x4499FFFF : 0x2A3A4AFF;
+    u32 border = highlight ? 0x4499FFFF : 0x2A3A4AFF;
     GRRLIB_Rectangle(x, y, w, 2,  border, 1);
     GRRLIB_Rectangle(x, y+50, w, 2, border, 1);
 
-    GRRLIB_PrintfTTF(x+14, y+7,  font, label, 18, 0xEEEEEEFF);
+    u32 labelCol = done ? 0x99A3AEFF : 0xEEEEEEFF;
+    GRRLIB_PrintfTTF(x+14, y+7,  font, label, 18, labelCol);
     GRRLIB_PrintfTTF(x+14, y+29, font, desc,  13, 0x778899FF);
 
-    const char* actStr = "GO";
-    u32 pillCol = done ? 0x555566FF : 0x3388CCFF;
+    const char* actStr = done ? "DONE" : "GO";
+    u32 pillCol = done ? 0x3A3F4AFF : 0x3388CCFF;
     int pw = GRRLIB_WidthTTF(font, actStr, 16) + 20;
     int px = x + w - pw - 14;
     int py = y + 14;
     GRRLIB_Rectangle(px, py, pw, 24, pillCol, 1);
-    GRRLIB_PrintfTTF(px + 10, py + 4, font, actStr, 16, 0xFFFFFFFF);
+    GRRLIB_PrintfTTF(px + 10, py + 4, font, actStr, 16, done ? 0x8891A0FF : 0xFFFFFFFF);
 }
 
 // ---------------------------------------------------------------
@@ -97,7 +101,11 @@ bool SettingsView::update(ir_t& ir) {
         switch (selectedIndex) {
             case 0: client.sslVerify  = !client.sslVerify;  break;
             case 1: musicEnabled      = !musicEnabled;       break;
-            case 2: cacheClearedCount = client.clearImageCache(); break;
+            // One-shot: only fires while cacheClearedCount is still -1 (unset
+            // this time Settings was opened). Re-pressing afterward is a no-op
+            // rather than clearing an already-empty cache and overwriting the
+            // "Cleared N" message with "Cleared 0".
+            case 2: if (cacheClearedCount < 0) cacheClearedCount = client.clearImageCache(); break;
         }
     }
     // IR click
@@ -108,7 +116,7 @@ bool SettingsView::update(ir_t& ir) {
                 switch (i) {
                     case 0: client.sslVerify  = !client.sslVerify;  break;
                     case 1: musicEnabled      = !musicEnabled;       break;
-                    case 2: cacheClearedCount = client.clearImageCache(); break;
+                    case 2: if (cacheClearedCount < 0) cacheClearedCount = client.clearImageCache(); break;
                 }
             }
         }
