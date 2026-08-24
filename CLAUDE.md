@@ -20,7 +20,26 @@ First run builds a `wiifin-dev` Docker image and cross-compiles mbedTLS
 no other way to catch errors short of running on hardware/emulator.
 
 Full explanation of why this is Docker-based, what's in the image, and
-gotchas encountered setting it up: see `DEV_SETUP.md`.
+gotchas encountered setting it up: see `DEV_SETUP.md`. For rebuilding
+`libs/mplayer-ce-build/libmplayer.a` itself (a separate, optional,
+much-longer process — cross-compiling MPlayer CE + FFmpeg from source, not
+something `docker-build.sh` does), see `MPLAYER_CE_BUILD.md`.
+
+## Deploy
+
+Two ways to get a fresh `WiiFin.dol` onto a real Wii:
+
+```bash
+WIILOAD=tcp:<wii-ip> tools/dev/bin/wiiload WiiFin.dol   # needs Wii sitting at the Homebrew Channel
+curl -T WiiFin.dol ftp://<wii-ip>/sd/apps/WiiFin/boot.dol  # needs ftpii (or similar) running on the Wii
+```
+
+`wiiload` is HBC's own network-loader protocol — it only works while HBC is
+actively listening. "Connection refused" despite a successful `ping` means
+the Wii is mid-app, not at HBC; back out and retry. FTP works regardless of
+what's currently running, as long as *something* with an FTP server is —
+note the destination filename is `boot.dol`, not `WiiFin.dol` (standard HBC
+app-folder layout: `sd:/apps/<name>/boot.dol` + `meta.xml` + `icon.png`).
 
 ## Structure
 
@@ -74,3 +93,24 @@ way to test against a real server.
   patch, rebuild it explicitly (`docker build -f Dockerfile.dev -t
   wiifin-dev .`) — `docker-build.sh` only builds the image if it's missing
   entirely, so it won't pick this up on its own.
+- `SYS_Report()` is a no-op on real hardware without a USB Gecko attached —
+  easy to add a debug print, test on real hardware, and see nothing. For
+  anything that needs to be visible without a Gecko, use `DebugLog::Log()`
+  (`source/core/DebugLog.h`) instead: it feeds a small on-screen HUD ring, a
+  300-entry in-app Log Viewer (Settings → View Debug Log), and — opt-in via
+  the Debug Log File setting — a batched (not per-line) file on the SD card.
+- GameCube pad / Classic Controller input is merged into the same
+  `WPAD_BUTTON_*`-shaped bitmask as Wiimote/IR (`Input::gcButtonsAsWpad()`),
+  but `vo_gx.c` inside the vendored `libmplayer.a` only ever reads raw
+  Wiimote data for its own in-video overlay/pause/seek handling — it's
+  completely blind to GC pad state. That's why `PlayerOverlay` has a
+  separate "nativeMode" rendering path (`onFrame()`/`drawNativeControls()`
+  etc., writing straight into the Y-plane texture) for any session revealed
+  via GC pad: `vo_gx.c`'s own overlay would simply never appear otherwise.
+- MPlayer fetches the actual video/audio stream itself, via its own stream
+  modules (`stream_https_wii.c`/`stream_http_wii.c`, inside the vendored
+  `libmplayer.a` — see `MPLAYER_CE_BUILD.md`) — **not** through
+  `JellyfinClient::httpRequest()`. Only API calls and image fetches go
+  through `JellyfinClient`; anything instrumenting or throttling network
+  behavior there (timing, retries, throughput measurement) has no effect on
+  the video stream itself.
