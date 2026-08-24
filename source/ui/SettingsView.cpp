@@ -131,7 +131,11 @@ bool SettingsView::update(ir_t& ir) {
     auto fireAction = [&](int i) {
         switch (i) {
             case 0: client.sslVerify   = !client.sslVerify;   break;
-            case 1: client.highBitrate = !client.highBitrate; break;
+            case 1: {
+                using BM = JellyfinClient::BitrateMode;
+                client.bitrateMode = (BM)(((int)client.bitrateMode + 1) % 4);
+                break;
+            }
             case 2: {
                 using VRM = JellyfinClient::VideoResMode;
                 client.videoResMode = (VRM)(((int)client.videoResMode + 1) % 3);
@@ -195,10 +199,34 @@ void SettingsView::render(ir_t& ir) {
         "Validate the server HTTPS certificate (disable for self-signed certs)",
         client.sslVerify, selectedIndex == 0);
 
-    drawToggleRow(60, rowY(1), 520,
-        "Higher Bitrate (Ethernet only)",
-        "3 Mbps transcode target instead of 1 -- wired connections only, not WiFi",
-        client.highBitrate, selectedIndex == 1);
+    {
+        using BM = JellyfinClient::BitrateMode;
+        char bitrateDesc[96];
+        const char* bitrateVal;
+        switch (client.bitrateMode) {
+            case BM::Fast:
+                bitrateVal = "FAST";
+                snprintf(bitrateDesc, sizeof(bitrateDesc), "Always %.0f kbps", (double)client.NETWORK_BITRATE_CEILING_KBPS);
+                break;
+            case BM::Medium:
+                bitrateVal = "MEDIUM";
+                snprintf(bitrateDesc, sizeof(bitrateDesc), "Always %.0f kbps", (double)client.NETWORK_BITRATE_MEDIUM_KBPS);
+                break;
+            case BM::Slow:
+                bitrateVal = "SLOW";
+                snprintf(bitrateDesc, sizeof(bitrateDesc), "Always %.0f kbps", (double)client.NETWORK_BITRATE_FLOOR_KBPS);
+                break;
+            default:
+                bitrateVal = "AUTO";
+                if (client.networkKbps > 0.0f)
+                    snprintf(bitrateDesc, sizeof(bitrateDesc), "Measured ~%.0f kbps -> %.0f kbps target",
+                        (double)client.networkKbps, (double)client.effectiveBitrateKbps());
+                else
+                    snprintf(bitrateDesc, sizeof(bitrateDesc), "Not measured yet -- checked before next playback");
+                break;
+        }
+        drawCycleRow(60, rowY(1), 520, "Bitrate", bitrateDesc, bitrateVal, selectedIndex == 1);
+    }
 
     {
         using VRM = JellyfinClient::VideoResMode;

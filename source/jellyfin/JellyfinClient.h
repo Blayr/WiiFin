@@ -392,16 +392,39 @@ public:
 
     bool sslVerify = true;   // true = verify certificate (set false to allow self-signed)
 
-    // Measured on real hardware over the Wii's official USB LAN adapter:
-    // ~4.2 Mbps sustained receive throughput on an otherwise-idle Wii (FTP
-    // bulk transfer), and real playback leaves less headroom than that since
-    // the same weak CPU is also decoding MPEG2 + driving GX. 3 Mbps is a
-    // safety margin under that ceiling, not the ceiling itself. WiFi is
-    // substantially slower and unmeasured here -- this is opt-in and meant
-    // for wired connections only (no reliable wired/wireless detection is
-    // exposed by libogc, so it's a manual Settings toggle rather than
-    // automatic).
-    bool highBitrate = false; // true = 3 Mbps transcode target instead of 1 Mbps
+    // Bitrate: Auto scales continuously off measured throughput (see
+    // networkKbps below); Fast/Medium/Slow are fixed manual overrides for
+    // when you know better than the estimate (or just want a predictable
+    // number). Ceiling (3000) is a safety margin under the ~4.2 Mbps
+    // measured wired throughput on this project's own test hardware (an
+    // otherwise-idle Wii, FTP bulk transfer) -- real playback leaves less
+    // headroom than that since the same weak CPU is also decoding MPEG2 +
+    // driving GX. Floor (700) matches this codebase's original hardcoded
+    // value from before any of this per-session measurement existed.
+    enum class BitrateMode { Auto = 0, Fast = 1, Medium = 2, Slow = 3 };
+    BitrateMode bitrateMode = BitrateMode::Auto;
+
+    static constexpr float NETWORK_BITRATE_SAFETY_MARGIN = 0.6f; // Auto: clamp(networkKbps * this, floor, ceiling)
+    static constexpr float NETWORK_BITRATE_FLOOR_KBPS     = 700.0f;  // == Slow
+    static constexpr float NETWORK_BITRATE_MEDIUM_KBPS    = 1500.0f;
+    static constexpr float NETWORK_BITRATE_CEILING_KBPS   = 3000.0f; // == Fast
+
+    // Resolves bitrateMode (+ networkKbps for Auto) to an actual transcode
+    // target in kbps -- shared by getTranscodingUrl(), the playback-start
+    // toast, and the Settings display so they can never disagree.
+    float effectiveBitrateKbps() const {
+        switch (bitrateMode) {
+            case BitrateMode::Fast:   return NETWORK_BITRATE_CEILING_KBPS;
+            case BitrateMode::Medium: return NETWORK_BITRATE_MEDIUM_KBPS;
+            case BitrateMode::Slow:   return NETWORK_BITRATE_FLOOR_KBPS;
+            default: {
+                float t = networkKbps * NETWORK_BITRATE_SAFETY_MARGIN;
+                if (t < NETWORK_BITRATE_FLOOR_KBPS)   t = NETWORK_BITRATE_FLOOR_KBPS;
+                if (t > NETWORK_BITRATE_CEILING_KBPS) t = NETWORK_BITRATE_CEILING_KBPS;
+                return t;
+            }
+        }
+    }
 
     // Transcode resolution. Unlike wired/wireless (no libogc API exposes
     // that), the Wii *can* reliably tell us whether the connected cable is
@@ -426,6 +449,42 @@ public:
         w = full ? 848 : 480;
         h = 480;
     }
+
+    // Live measured throughput (kbps), used by effectiveBitrateKbps()'s Auto
+    // case above. Earlier attempts tried to label the connection "Wired" or
+    // "Wireless" (first via MAC -- confirmed to return the same value
+    // regardless of adapter on this hardware/IOS combo, so unusable as an
+    // identity key; then via a single wired/wireless threshold on this same
+    // number) but real Wi-Fi throughput on this hardware varies too much
+    // session to session (and apparently minute to minute) for a binary
+    // label to track it. Scaling directly off the number sidesteps needing
+    // a label at all: a good moment gets a genuinely higher bitrate, a bad
+    // moment gets throttled down, regardless of which physical link
+    // produced it. Persisted across launches as an optimistic starting
+    // guess (see App::loadSettings/saveSettings), then immediately refined
+    // by this session's real traffic via recordThroughputSample().
+    float networkKbps = 0.0f;
+
+    // Feeds one real HTTP response's measured size/time into the running
+    // throughput estimate -- piggybacks on real image fetches during normal
+    // browsing instead of needing a dedicated synthetic speed test. Small
+    // responses (JSON API calls) are ignored: fixed per-request overhead
+    // (DNS + TCP/TLS handshake) would dominate the timing and make the
+    // estimate meaningless.
+    void recordThroughputSample(size_t bytes, unsigned ms);
+
+    // Called right before requesting a transcode for a brand new playback
+    // session (see LibraryView.cpp's Play / Resume-confirm sites), while the
+    // loading spinner (and its on-screen debug log) is already up. No-op if
+    // bitrateMode isn't Auto (a fixed Fast/Medium/Slow choice doesn't need a
+    // measurement at all) or if we already have one to go on (this
+    // session's real samples, or last session's persisted value) --
+    // otherwise forces one real, deliberately-oversized, guaranteed-cache-
+    // miss image fetch so recordThroughputSample() has something to measure
+    // before the bitrate decision is made, for a completely fresh
+    // install/profile with no history at all.
+    void ensureNetworkSpeedKnown(const std::string& serverUrl, const JellyfinAuth& auth,
+                                  const std::string& itemId);
 
     // Directory to cache fetched image bytes in, e.g. "sd:/apps/WiiFin/cache/"
     // (trailing slash). Empty = caching disabled (no writable device found).

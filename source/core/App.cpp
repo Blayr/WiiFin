@@ -238,6 +238,16 @@ static bool runPlaySession(JellyfinClient& client,
         PlayerOverlay overlay(ctx);
         wii_player_set_overlay(&overlay);
 
+        /* Same decision getTranscodingUrl() made for maxBitrate/resolution --
+         * shown as a toast so it's obvious at a glance what this session
+         * picked. Debug-log-gated: it's a diagnostic aid, not something a
+         * normal viewing session should ever flash on screen. */
+        if (DebugLog::IsFileLoggingEnabled()) {
+            int resW, resH;
+            client.getEffectiveResolution(resW, resH);
+            overlay.showBitrateIndicator((int)client.effectiveBitrateKbps(), resW, resH);
+        }
+
         /* Wire up playback-start reporting */
         s_pendingReport.client        = &client;
         s_pendingReport.serverUrl     = serverUrl;
@@ -1527,8 +1537,9 @@ void App::loadSettings() {
 
         if (strcmp(key, "ssl_verify") == 0) {
             jellyfinClient.sslVerify = atoi(val) != 0;
-        } else if (strcmp(key, "high_bitrate") == 0) {
-            jellyfinClient.highBitrate = atoi(val) != 0;
+        } else if (strcmp(key, "bitrate_mode") == 0) {
+            int v = atoi(val);
+            if (v >= 0 && v <= 3) jellyfinClient.bitrateMode = (JellyfinClient::BitrateMode)v;
         } else if (strcmp(key, "video_res_mode") == 0) {
             int v = atoi(val);
             if (v >= 0 && v <= 2) jellyfinClient.videoResMode = (JellyfinClient::VideoResMode)v;
@@ -1538,6 +1549,12 @@ void App::loadSettings() {
             bgImageLoadingEnabled = atoi(val) != 0;
         } else if (strcmp(key, "debug_log_file") == 0) {
             debugLogFileEnabled = atoi(val) != 0;
+        } else if (strcmp(key, "network_kbps") == 0) {
+            /* Last session's measured throughput -- no identity key (see
+             * networkKbps's declaration for why), just an optimistic
+             * starting point that this session's real traffic immediately
+             * refines/corrects. */
+            jellyfinClient.networkKbps = (float)atof(val);
         } else if (strcmp(key, "profile_count") == 0) {
             profileCount = atoi(val);
             if (profileCount > 0 && profileCount <= 32) profiles.resize((size_t)profileCount);
@@ -1591,10 +1608,11 @@ void App::saveSettings() {
     FILE* f = fopen(settingsPath.c_str(), "w");
     if (!f) return;
     fprintf(f, "ssl_verify=%d\n",      jellyfinClient.sslVerify ? 1 : 0);
-    fprintf(f, "high_bitrate=%d\n",    jellyfinClient.highBitrate ? 1 : 0);
+    fprintf(f, "bitrate_mode=%d\n",    (int)jellyfinClient.bitrateMode);
     fprintf(f, "video_res_mode=%d\n",  (int)jellyfinClient.videoResMode);
     fprintf(f, "music_enabled=%d\n",    musicEnabled ? 1 : 0);
     fprintf(f, "bg_image_loading=%d\n", bgImageLoadingEnabled ? 1 : 0);
+    fprintf(f, "network_kbps=%.1f\n",   (double)jellyfinClient.networkKbps);
     fprintf(f, "debug_log_file=%d\n",   debugLogFileEnabled ? 1 : 0);
     fprintf(f, "profile_count=%d\n",   (int)profiles.size());
     for (int i = 0; i < (int)profiles.size(); i++) {

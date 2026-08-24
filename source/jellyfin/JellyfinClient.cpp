@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <vector>
+#include <cmath>
 
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
@@ -87,7 +88,55 @@ bool JellyfinClient::initNetwork() {
     networkReady = true;
     localIp_   = ip;
     localMask_ = mask;
+
+    // networkKbps was already seeded from wiifin.cfg's last-session value by
+    // App::loadSettings(), before initNetwork() ever runs. Just report what
+    // we're starting from.
+    DebugLog::Log("Boot: network ~%.0f kbps (from last session, 0 = never measured)",
+                  (double)networkKbps);
     return true;
+}
+
+void JellyfinClient::recordThroughputSample(size_t bytes, unsigned ms) {
+    if (bytes < 20000 || ms == 0) return;
+
+    float sampleKbps = (float)(bytes * 8) / (float)ms; // (bytes*8 bits) / ms == kbps
+    // Exponential moving average: smooths a one-off slow/fast transfer
+    // while still tracking a real, sustained change -- weighted to react
+    // reasonably quickly (50/50) since real-world Wi-Fi throughput on this
+    // hardware has turned out to swing a lot even within one session, and a
+    // slow-to-adapt average would keep recommending a bitrate the current
+    // conditions can no longer sustain.
+    float prevKbps = networkKbps;
+    networkKbps = (networkKbps <= 0.0f) ? sampleKbps
+                                         : (networkKbps * 0.5f + sampleKbps * 0.5f);
+    if (fabsf(networkKbps - prevKbps) > prevKbps * 0.25f || prevKbps <= 0.0f)
+        DebugLog::Log("Net: ~%.0f kbps sample, running estimate now ~%.0f kbps",
+                      (double)sampleKbps, (double)networkKbps);
+}
+
+void JellyfinClient::ensureNetworkSpeedKnown(const std::string& serverUrl, const JellyfinAuth& auth,
+                                              const std::string& itemId) {
+    if (bitrateMode != BitrateMode::Auto) return; // fixed choice -- no measurement needed
+    if (networkKbps > 0.0f) return; // already have something to go on -- last session or real samples this session
+
+    DebugLog::Log("Net: no measurement yet, checking before playback...");
+    // Deliberately oversized and an unusual size nothing else requests, so
+    // this is a guaranteed cache miss (a real network transfer, not a disk
+    // read) -- large enough that connection-setup overhead doesn't swamp
+    // the timing the way it would for a normal poster-sized fetch.
+    std::string imgBytes;
+    getItemImageBytes(serverUrl, auth, itemId, 1600, 900, imgBytes, "speedtest");
+
+    if (networkKbps <= 0.0f) {
+        // Inconclusive (no image that size, fetch failed, or it came back
+        // under recordThroughputSample's size floor) -- default to the
+        // floor rather than leave getTranscodingUrl with nothing to go on.
+        networkKbps = NETWORK_BITRATE_FLOOR_KBPS / NETWORK_BITRATE_SAFETY_MARGIN;
+        DebugLog::Log("Net: check inconclusive, defaulting to floor bitrate");
+    } else {
+        DebugLog::Log("Net: check done -- ~%.0f kbps", (double)networkKbps);
+    }
 }
 
 bool JellyfinClient::discoverServers(std::vector<DiscoveredServer>& out) {
@@ -486,8 +535,12 @@ int JellyfinClient::httpRequest(const std::string& url,
         u64 t0 = gettime();
         int status = httpsRequest(host, port, basePath, method, contentType, body, authToken, responseBody);
         u32 ms = (u32)ticks_to_millisecs(gettime() - t0);
-        if (status > 0) DebugLog::Log("<- %d (%u B, %u ms)", status, (unsigned)responseBody.size(), ms);
-        else            DebugLog::Log("x %s (%u ms)", errMsg.c_str(), ms);
+        if (status > 0) {
+            DebugLog::Log("<- %d (%u B, %u ms)", status, (unsigned)responseBody.size(), ms);
+            recordThroughputSample(responseBody.size(), ms);
+        } else {
+            DebugLog::Log("x %s (%u ms)", errMsg.c_str(), ms);
+        }
         return status;
     }
 
@@ -639,6 +692,7 @@ int JellyfinClient::httpRequest(const std::string& url,
         responseBody = "";
     }
     DebugLog::Log("<- %d (%u B, %u ms)", status, (unsigned)responseBody.size(), plainMs);
+    recordThroughputSample(responseBody.size(), plainMs);
     return status;
 }
 
@@ -2196,7 +2250,11 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
     // Jellyfin reads these from the body; the same-named query params are ignored
     // by the server-side session manager when selecting the play method.
     char bodyBuf[1024];
-    int maxBitrate = highBitrate ? 3000000 : 1000000; // see highBitrate's declaration for why
+    // See effectiveBitrateKbps() -- Auto scales continuously from measured
+    // throughput; Fast/Medium/Slow are fixed. Callers should have already
+    // called ensureNetworkSpeedKnown() before reaching here (a no-op unless
+    // Auto and unmeasured).
+    int maxBitrate = (int)(effectiveBitrateKbps() * 1000.0f);
     int resW, resH;
     getEffectiveResolution(resW, resH); // see videoResMode's declaration for why
     // CodecProfiles with LessThanEqual Width/Height Conditions are the only way to
@@ -2295,7 +2353,7 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
     // effective ceiling, not MaxStreamingBitrate in the PlaybackInfo body
     // above (that mostly just shapes which profile the server proposes).
     // VideoBitrate is kept under maxBitrate's combined video+audio budget
-    // (same one used above) rather than hardcoded, so highBitrate actually
+    // (same one used above) rather than hardcoded, so bitrateMode actually
     // changes what gets streamed.
     char videoBitrateBuf[16], widthBuf[8], heightBuf[8];
     snprintf(videoBitrateBuf, sizeof(videoBitrateBuf), "%d", maxBitrate - 192000);

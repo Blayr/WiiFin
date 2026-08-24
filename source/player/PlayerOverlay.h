@@ -55,6 +55,15 @@ public:
     void tick(float timePos, int paused, uint32_t btnsDown, uint32_t btnsHeld,
               float irX, float irY, bool irValid, uint32_t gcDown = 0);
 
+    /* Call once, right after construction and before wii_player_play() --
+     * shows a bottom-right toast for ~2s with the transcode bitrate and
+     * whether it was picked as the fast/wired or slow/wireless target, so
+     * you can tell at a glance what this session actually requested. Wall-
+     * clock timed (not frame-count), unlike the volume HUD's timer, since
+     * the bgThread tick rate isn't reliably ~30Hz (see the scrub-bar
+     * accel fix earlier). */
+    void showBitrateIndicator(int kbps, int resW, int resH);
+
     /* Static trampoline: registered as g_wiifin_overlay_cb.
      * Called from the MPlayer main thread (rendering loop), safe to write
      * directly to the Y texture.  Must NOT call GRRLIB or change GX state. */
@@ -121,6 +130,19 @@ private:
     int volLevel         = volLevelMax / 2;
     int volIndicatorTimer = 0;
     void adjustVolume(int delta);
+
+    /* Transient bottom-right bitrate/network toast -- see
+     * showBitrateIndicator() above. Drawn by onFrame() while gettime() is
+     * still under bitrateIndicatorExpireTicks, same "regardless of state/
+     * nativeMode" treatment as the volume HUD. */
+    char     bitrateIndicatorText[64] = "";
+    // showBitrateIndicator() is called before wii_player_play() even starts
+    // -- loading/buffering can take several seconds, so the 2s countdown
+    // must not start until the first real (non-loading-screen) frame is
+    // actually drawn, or most/all of it burns away invisibly before
+    // anything's on screen to show it against.
+    bool     bitrateIndicatorPending = false;
+    uint64_t bitrateIndicatorExpireTicks = 0;
 
     /* IR pointer state — written by tick(), read by onFrame() for rendering */
     float lastIrX    = -1.0f;

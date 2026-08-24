@@ -31,6 +31,7 @@
 #include <string.h>
 #include <math.h>
 #include <ogc/system.h>
+#include <ogc/lwp_watchdog.h>
 #include <wiiuse/wpad.h>
 
 /* Defined in WiiPlayer.cpp (extern "C") — consumed flag set by vo_gx.c's
@@ -365,6 +366,21 @@ void PlayerOverlay::adjustVolume(int delta)
     if (volLevel < 0)          volLevel = 0;
     if (volLevel > volLevelMax) volLevel = volLevelMax;
     volIndicatorTimer = 60; /* ~2 s at the ~30 Hz bgThread tick rate */
+}
+
+void PlayerOverlay::showBitrateIndicator(int kbps, int resW, int resH)
+{
+    // Describes this specific bitrate choice, not a claim about the
+    // physical connection (wired-vs-wireless labeling turned out to be
+    // unreliable -- see JellyfinClient::networkKbps's comment). Buckets are
+    // relative to the app's own floor(700)/ceiling(3000) range.
+    const char* label = kbps >= 2200 ? "Fast" : kbps >= 1200 ? "Medium" : "Slow";
+    snprintf(bitrateIndicatorText, sizeof(bitrateIndicatorText),
+             "%d kbps %dx%d (%s)", kbps, resW, resH, label);
+    // Don't start the countdown yet -- onFrame() does that on the first real
+    // frame it draws (see the loading_active check there).
+    bitrateIndicatorPending = true;
+    bitrateIndicatorExpireTicks = 0;
 }
 
 void PlayerOverlay::updateIntroPrompt(float timePos)
@@ -1135,6 +1151,35 @@ static void drawHelpScreen(uint8_t* Y, int W, int H)
  * shows for every session (including the Hidden-state power-user
  * shortcuts and real-Wiimote sessions, where nothing else provides any
  * volume feedback at all). */
+/* Transient top-left bitrate/network toast, shown once at playback start
+ * (see PlayerOverlay::showBitrateIndicator()) -- top-left rather than
+ * bottom-right so it doesn't collide with the bottom control row/progress
+ * bar, and top-left rather than top-right so it doesn't collide with the
+ * volume gauge either. Margins mirror drawVolumeIndicator's (H/12, W/14) --
+ * comfortably clear of CRT overscan, not hugging the raw edge. */
+static void drawBitrateIndicator(uint8_t* Y, int W, int H, const char* text)
+{
+    const int scale = 2;
+    const int pad   = 8;
+    const int marginTop  = H / 12;
+    const int marginLeft = W / 14;
+
+    int tw = textWidthScaled(text, scale);
+    int panelW = tw + pad * 2;
+    int panelH = 7 * scale + pad * 2;
+
+    int px0 = marginLeft;
+    int px1 = px0 + panelW;
+    int py0 = marginTop;
+    int py1 = py0 + panelH;
+
+    for (int y = py0; y <= py1; y++)
+        for (int x = px0; x <= px1; x++)
+            setYpix(Y, W, x, y, 20);
+
+    drawTextScaled(Y, W, px0 + pad, py0 + pad, text, 230, scale);
+}
+
 static void drawVolumeIndicator(uint8_t* Y, int W, int H, int level, int levelMax)
 {
     const int scale   = 2;
@@ -1270,6 +1315,20 @@ void PlayerOverlay::onFrame(uint8_t* Ytex, int Ywidth, int Yheight)
      * vo_gx.c doesn't show one for real-Wiimote sessions either. */
     if (self->volIndicatorTimer > 0)
         drawVolumeIndicator(Ytex, Ywidth, Yheight, self->volLevel, self->volLevelMax);
+
+    /* Bitrate toast: same "regardless of state/nativeMode" treatment,
+     * wall-clock timed so the ~2s is accurate regardless of actual tick
+     * rate. Countdown starts here, on the first real frame reaching this
+     * point (past the loading-screen early-return above), not back when
+     * showBitrateIndicator() was called before playback even started --
+     * otherwise buffering time eats into the 2s before anything's visible
+     * to show it against. */
+    if (self->bitrateIndicatorPending) {
+        self->bitrateIndicatorPending = false;
+        self->bitrateIndicatorExpireTicks = gettime() + secs_to_ticks(2);
+    }
+    if (gettime() < self->bitrateIndicatorExpireTicks)
+        drawBitrateIndicator(Ytex, Ywidth, Yheight, self->bitrateIndicatorText);
 
     if (self->state == State::Hidden) return;
 

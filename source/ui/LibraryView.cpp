@@ -2279,6 +2279,11 @@ bool LibraryView::update(ir_t& ir) {
                 // film/series detail page is hidden during the network call.
                 drawLoadingFrame();
                 drawLoadingFrame();
+                // No-op if already known (last session's guess or real
+                // samples from browsing already this session) -- otherwise
+                // a one-off speed check, visible in the on-screen debug log
+                // while the spinner's up, before we decide the bitrate.
+                client.ensureNetworkSpeedKnown(serverUrl, auth, detailItemId);
                 if (!client.getTranscodingUrl(serverUrl, auth,
                                               detailItemId, detailItemId,
                                               audioIdx, subIdx, startTicks, url, playSessionId)) {
@@ -2437,6 +2442,7 @@ bool LibraryView::update(ir_t& ir) {
                 // film/series detail page is hidden during the network call.
                 drawLoadingFrame();
                 drawLoadingFrame();
+                client.ensureNetworkSpeedKnown(serverUrl, auth, detailItemId);
                 if (!client.getTranscodingUrl(serverUrl, auth,
                                               detailItemId, detailItemId,
                                               audioIdx, subIdx, startTicks, url, playSessionId)) {
