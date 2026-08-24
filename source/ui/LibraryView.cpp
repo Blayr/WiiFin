@@ -2351,7 +2351,33 @@ bool LibraryView::update(ir_t& ir) {
             }
             if (Input::isBackPressed()) {
                 freeDetail();
-                state = detailReturnState;
+                // Video playback frees these grids' textures (and, for the
+                // Suggestion/Upcoming rows, their metadata too -- see
+                // releaseForPlayback()) to make room for MPlayer. Route
+                // through the matching *Load state to refetch instead of
+                // landing on blank/empty cards when returning to a state
+                // left stale by that (same pattern as SeasonsReady's own
+                // Back handler below, generalized to every grid detail can
+                // return to).
+                if ((detailReturnState == State::PostersReady ||
+                     detailReturnState == State::GlobalFavoritesReady) &&
+                    posterTexturesStale && !items.empty()) {
+                    state = State::PostersLoad;
+                } else if (detailReturnState == State::MovieSuggestionsReady &&
+                           movieContItems.empty() && movieRecentItems.empty()) {
+                    state = State::MovieSuggestionsLoad;
+                } else if (detailReturnState == State::TVSuggestionsReady &&
+                           tvContItems.empty() && tvRecentItems.empty()) {
+                    state = State::TVSuggestionsLoad;
+                } else if (detailReturnState == State::TVUpcomingReady &&
+                           tvUpcomingItems.empty()) {
+                    state = State::TVUpcomingLoad;
+                } else if (detailReturnState == State::MusicSuggestionsReady &&
+                           musicRecentItems.empty()) {
+                    state = State::MusicSuggestionsLoad;
+                } else {
+                    state = detailReturnState;
+                }
             } else if (Input::isUpPressed()) {
                 detailFocusRow = 0;
             } else if (Input::isDownPressed()) {
