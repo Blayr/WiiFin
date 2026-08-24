@@ -103,12 +103,16 @@ void BackgroundImageLoader::workerLoop() {
         s.state = SlotState::Fetching;
         int myGen = s.generation;
 
-        SYS_Report("[bgload] fetching itemId=%s size=%dx%d gen=%d\n",
-                   s.req.itemId.c_str(), s.req.width, s.req.height, myGen);
+        SYS_Report("[bgload] fetching itemId=%s size=%dx%d gen=%d backdrop=%d\n",
+                   s.req.itemId.c_str(), s.req.width, s.req.height, myGen, (int)s.req.isBackdrop);
 
         std::string bytes;
-        bool ok = client_->getItemImageBytes(*serverUrl_, *auth_, s.req.itemId,
-                                             s.req.width, s.req.height, bytes);
+        bool ok = s.req.isBackdrop
+            ? client_->getItemBackdropBytes(*serverUrl_, *auth_, s.req.backdropItem,
+                                            s.req.width, s.req.height, bytes)
+            : client_->getItemImageBytes(*serverUrl_, *auth_, s.req.itemId,
+                                         s.req.width, s.req.height, bytes,
+                                         s.req.itemName);
         GRRLIB_texImg* tex = nullptr;
         if (ok && !bytes.empty())
             tex = loadJPEGTexture((const u8*)bytes.data(), (u32)bytes.size());

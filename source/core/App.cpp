@@ -4,6 +4,7 @@
 #include "MusicBGM.h"
 #include "SoundFX.h"
 #include "I18n.h"
+#include "DebugLog.h"
 #include "../ui/ConnectView.h"
 #include "../ui/MusicPlayerView.h"
 #include "../ui/ProfileView.h"
@@ -13,6 +14,7 @@
 
 #include <grrlib.h>
 #include <wiiuse/wpad.h>
+#include <ogc/pad.h>
 #include <fat.h>
 #include <sdcard/wiisd_io.h>
 #include <errno.h>
@@ -41,6 +43,7 @@ extern unsigned int  data_cursors_PointerP1_64_png_len;
 /* Forward declaration — defined later in this file, before App::loop() */
 static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
                                GRRLIB_texImg* cursorPointerTex, bool musicEnabled);
+
 
 /* --- GRRLIB loading spinner for the pre-GX phase ---
  * While MPlayer opens the stream, GRRLIB stays active and bgThread
@@ -315,6 +318,11 @@ static bool runPlaySession(JellyfinClient& client,
              * on track switches and position resumes.  Fresh playback from the
              * start (startTimeTicks == 0) never has a pad, so skip is 0. */
             g_wiifin_ss_secs = (startTimeTicks > 30000000LL) ? 3.0f : 0.0f;
+            /* g_mplayer_time_pos resets to 0 at the start of every session --
+             * it's the PTS within THIS transcode, not the absolute position
+             * in the video. Stash the absolute base so the overlay display
+             * and playback-stopped reporting below can add it back. */
+            g_wiifin_session_start_secs = (float)(startTimeTicks / 10000000.0);
             SYS_Report("[App] wii_player_play: startTicks=%lld ss=%.1f\n",
                        startTimeTicks, (double)g_wiifin_ss_secs);
             reason = wii_player_play(url.c_str());
@@ -336,25 +344,38 @@ static bool runPlaySession(JellyfinClient& client,
             VIDEO_SetBlack(true);
             VIDEO_Flush();
             /* Show the loading spinner in both GX framebuffers so there is
-             * no flash while the app is tearing down the play session. */
-            {
-                GRRLIB_texImg* tmpRing = GRRLIB_LoadTexture(data_ring_png);
-                for (int _fi = 0; _fi < 2; ++_fi) {
-                    GRRLIB_FillScreen(0x0A1628FF);
-                    if (tmpRing) {
-                        GRRLIB_SetMidHandle(tmpRing, true);
-                        GRRLIB_DrawImg(320, 240, tmpRing, 0, 1.0f, 1.0f, 0xFFFFFFFF);
-                        GRRLIB_SetMidHandle(tmpRing, false);
-                    }
-                    GRRLIB_Render();
+             * no flash while the app is tearing down the play session.
+             *
+             * font/ringTex loaded fresh here rather than reusing lv's --
+             * GRRLIB_Init() above just wiped the previous FreeType/texture
+             * state, so lv.font/lv.ringTex (last assigned before this play
+             * session started) are dangling until App::loop() calls
+             * lv.reinitAfterPlayback() once this function returns. Handing
+             * these to lv via reattachLoadingAssets() lets the teardown
+             * network calls below animate a live spinner + debug log
+             * instead of using those stale pointers or freezing on one
+             * static frame. Not explicitly freed afterward -- like every
+             * other GRRLIB asset in this function, they're invalidated
+             * wholesale by the next GRRLIB_Exit()/Init() cycle when video
+             * playback resumes (or reassigned for real by
+             * reinitAfterPlayback() once we're back in App::loop()). */
+            GRRLIB_texImg*  tmpRing = GRRLIB_LoadTexture(data_ring_png);
+            GRRLIB_ttfFont* tmpFont = GRRLIB_LoadTTF(data_wii_font_ttf, data_wii_font_ttf_len);
+            for (int _fi = 0; _fi < 2; ++_fi) {
+                GRRLIB_FillScreen(0x0A1628FF);
+                if (tmpRing) {
+                    GRRLIB_SetMidHandle(tmpRing, true);
+                    GRRLIB_DrawImg(320, 240, tmpRing, 0, 1.0f, 1.0f, 0xFFFFFFFF);
+                    GRRLIB_SetMidHandle(tmpRing, false);
                 }
-                GRRLIB_FreeTexture(tmpRing);
+                GRRLIB_Render();
             }
+            lv.reattachLoadingAssets(tmpFont, tmpRing);
             /* Both framebuffers now contain the spinner — safe to unblank. */
             VIDEO_SetBlack(false);
             VIDEO_Flush();
 
-            long long positionTicks = (long long)(g_mplayer_time_pos * 10000000.0f);
+            long long positionTicks = startTimeTicks + (long long)(g_mplayer_time_pos * 10000000.0f);
 
             /* Retry on premature EOF (transcoder session expired mid-connect).
              * Skip reportPlaybackStopped on retry attempts: position is 0,
@@ -367,7 +388,8 @@ static bool runPlaySession(JellyfinClient& client,
              * skip reportPlaybackStopped (saves one full TLS+HTTP round-trip,
              * ~2-4 s) and skip BGM resume (we'll pause it again on the next
              * loop iteration anyway). */
-            bool isTrackSwitch = (reason == PLAYER_STOP_AUDIO || reason == PLAYER_STOP_SUB);
+            bool isTrackSwitch = (reason == PLAYER_STOP_AUDIO || reason == PLAYER_STOP_SUB ||
+                                  reason == PLAYER_STOP_SCRUB);
             bool isHomeSuspend = (reason == PLAYER_STOP_HOME);
 
             /* Restart BGM now — before the blocking network calls — so the
@@ -392,6 +414,20 @@ static bool runPlaySession(JellyfinClient& client,
              * Also skip for track switches: playback resumes immediately at
              * the same position so the "stopped" report is both misleading
              * and a source of unnecessary multi-second loader freeze. */
+            /* Deliberately NOT wrapped in lv.runWithLoading() (a background
+             * LWP thread + live spinner) despite these being exactly the
+             * kind of slow calls that pattern is for -- a user hit what
+             * looked like a genuine hang (not just a long stall) right
+             * after a very short (~seconds) playback session, immediately
+             * after adding that wrapping here. Spawning a fresh thread to
+             * hit the network the instant wii_player_play() returns is a
+             * real behavioral change from before (synchronous, main-thread
+             * only) and a plausible way to race MPlayer/WiiPlayer's own
+             * teardown into the documented IOS-socket-not-yet-settled state
+             * (see httpsRequest's retry-loop comment) instead of just
+             * observing it. Reverted to synchronous pending further
+             * investigation -- the tradeoff is a frozen (non-animating)
+             * spinner during a slow report, not a suspected hang. */
             if (!willRetry && !isTrackSwitch && !isHomeSuspend && positionTicks > 0) {
                 client.reportPlaybackStopped(serverUrl, auth, itemId, mediaSourceId,
                                              playSessionId, positionTicks);
@@ -400,7 +436,7 @@ static bool runPlaySession(JellyfinClient& client,
                 client.deleteActiveEncoding(serverUrl, auth, playSessionId);
 
             if (willRetry) {
-                long long retryTicks = startTimeTicks + positionTicks;
+                long long retryTicks = positionTicks; /* already absolute -- see positionTicks above */
                 std::string retryUrl, retrySession;
                 if (client.getTranscodingUrl(serverUrl, auth, itemId, mediaSourceId,
                                              audioIdx, subIdx, retryTicks,
@@ -444,7 +480,9 @@ static bool runPlaySession(JellyfinClient& client,
             if (!wantsExit) {
                 /* User pressed B (resume): delete old session, restart from
                  * suspended position.  getTranscodingUrl adds a RESUME_PAD
-                 * back-off automatically. */
+                 * back-off automatically.
+                 * Not wrapped in lv.runWithLoading() -- see the matching
+                 * comment above the EOF teardown path for why. */
                 client.deleteActiveEncoding(serverUrl, auth, playSessionId);
                 std::string newUrl, newSession;
                 if (client.getTranscodingUrl(serverUrl, auth, itemId, mediaSourceId,
@@ -508,7 +546,7 @@ static bool runPlaySession(JellyfinClient& client,
             /* Also sync back to PlayerOverlayContext for consistency */
             ctx.selectedAudio = newAudio;
             ctx.selectedSub   = newSub;
-            long long switchTicks = (long long)(g_mplayer_time_pos * 10000000.0f);
+            long long switchTicks = startTimeTicks + (long long)(g_mplayer_time_pos * 10000000.0f);
 
             std::string newUrl, newSession;
             if (!client.getTranscodingUrl(serverUrl, auth,
@@ -520,6 +558,23 @@ static bool runPlaySession(JellyfinClient& client,
             subIdx         = newSub;
             startTimeTicks = switchTicks;  /* for premature-EOF retry on new session */
             g_wiifin_track_switch = 1;     /* suppress loading overlay on restart */
+            continue;
+        }
+
+        if (reason == PLAYER_STOP_SCRUB) {
+            /* Progress-bar scrub committed: restart at the requested
+             * position via a fresh transcoding URL, same as a track switch.
+             * (Not g_wiifin_track_switch -- the loading spinner is expected
+             * and useful here since the content visibly jumps.) */
+            long long scrubTicks = (long long)(g_wiifin_scrub_target_secs * 10000000.0f);
+
+            std::string newUrl, newSession;
+            if (!client.getTranscodingUrl(serverUrl, auth,
+                                          itemId, mediaSourceId,
+                                          audioIdx, subIdx, scrubTicks, newUrl, newSession)) return false;
+            url            = newUrl;
+            playSessionId  = newSession;
+            startTimeTicks = scrubTicks;  /* for premature-EOF retry on new session */
             continue;
         }
 
@@ -589,6 +644,11 @@ void App::init(const char* argv0) {
         VIDEO_Init();
         SYS_Report("[WiiFin] VIDEO_Init done\n");
         GXRModeObj* m = VIDEO_GetPreferredMode(NULL);
+        // Progressive (480p) is only possible over component/HDMI-adapter
+        // cables -- composite/S-Video are hard-capped at interlaced. Drives
+        // JellyfinClient::videoResMode's Auto choice (see its declaration).
+        jellyfinClient.isProgressiveVideo = (m->viTVMode & 3) == VI_PROGRESSIVE;
+        SYS_Report("[WiiFin] video mode progressive=%d\n", (int)jellyfinClient.isProgressiveVideo);
         void* xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(m));
         VIDEO_ClearFrameBuffer(m, xfb, 0x00800080); // YCbCr black — prevents green garbage frame
         VIDEO_Configure(m);
@@ -657,6 +717,7 @@ void App::init(const char* argv0) {
     WPAD_Init();
     WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
     WPAD_SetVRes(WPAD_CHAN_0, 640, 480);
+    PAD_Init(); // GameCube controller support -- see Input::update()
 
     // Try argv0, all known prefixes, and NO-prefix (default libfat device)
     if (argv0 && argv0[0]) {
@@ -748,9 +809,11 @@ void App::init(const char* argv0) {
     if (!cacheDevice.empty()) {
         mkdirp(cacheDevice + ":/apps/WiiFin/cache");
         jellyfinClient.cacheDir = cacheDevice + ":/apps/WiiFin/cache/";
+        DebugLog::Init(cacheDevice + ":/apps/WiiFin/wiifin_log.txt");
     }
 
     loadSettings();
+    DebugLog::SetFileLoggingEnabled(debugLogFileEnabled);
     MusicBGM::init(musicEnabled);
     SoundFX::init();
     I18n::init();
@@ -1148,6 +1211,10 @@ void App::loop() {
     /* ---- Helper: open ConnectView, on success add/update profile + library ---- */
     auto runConnect = [&]() {
         ConnectView cv(btnTex, cursorPointerTex, font, jellyfinClient);
+        // See the matching comment in runProfilePicker() -- one settle
+        // frame before this screen's first input poll.
+        cv.render(ir);
+        GRRLIB_Render();
         ConnectResult res = ConnectResult::None;
         while (res == ConnectResult::None && running) {
             Input::update();
@@ -1156,6 +1223,7 @@ void App::loop() {
             if (Input::isHomePressed() && showHomeOverlay()) { running = false; break; }
             res = cv.update(ir);
             cv.render(ir);
+            DebugLog::Render(font);
             GRRLIB_Render();
         }
         if (res == ConnectResult::Success) {
@@ -1190,6 +1258,15 @@ void App::loop() {
                 return;
             }
             ProfileView pv(font, cursorPointerTex, profiles);
+            /* Render one frame (a real vsync wait) before the loop below's
+             * first Input::update(). Without this, the same A press that
+             * opened this screen -- and the WPAD/PAD hardware poll behind
+             * it -- can still read as "just pressed" on this screen's very
+             * first input poll (no vsync boundary has passed for the
+             * hardware state to settle), auto-confirming whatever's
+             * focused (row 0) before the user ever sees the screen. */
+            pv.render(ir);
+            GRRLIB_Render();
             ProfileResult res = ProfileResult::None;
             while (res == ProfileResult::None && running) {
                 Input::update();
@@ -1198,6 +1275,7 @@ void App::loop() {
                 if (Input::isHomePressed() && showHomeOverlay()) { running = false; return; }
                 res = pv.update(ir);
                 pv.render(ir);
+                DebugLog::Render(font);
                 GRRLIB_Render();
             }
             if (!running || res == ProfileResult::Back) return;
@@ -1262,7 +1340,14 @@ void App::loop() {
                 }
                 case 1: {
                     // Launch Settings view
-                    SettingsView sv(btnTex, font, jellyfinClient, musicEnabled);
+                    SettingsView sv(btnTex, font, jellyfinClient, musicEnabled, debugLogFileEnabled);
+                    // See the matching comment in runProfilePicker() -- one
+                    // settle frame before this screen's first input poll, so
+                    // the A press that opened Settings can't also register
+                    // as a fresh press against row 0 (toggling SSL
+                    // Verification the instant the screen opens).
+                    sv.render(ir);
+                    GRRLIB_Render();
                     while (true) {
                         Input::update();
                         WPAD_IR(WPAD_CHAN_0, &ir);
@@ -1320,8 +1405,11 @@ void App::loop() {
                               ir.y >= (BY_START + i * B_SPACING) &&
                               ir.y <= (BY_START + i * B_SPACING + BH);
 
-            // Zoom only on IR hover, no tint change ever
-            float zoom = isHover ? 1.06f : 1.0f;
+            // Zoom on IR hover OR D-pad/button-nav selection -- isSelected alone
+            // (used below for the no-texture fallback) never affected the
+            // textured button's own visual, so D-pad/gamepad navigation had
+            // no indication at all of which button was focused.
+            float zoom = (isHover || isSelected) ? 1.06f : 1.0f;
             int drawW  = (int)(BW * zoom);
             int drawH  = (int)(BH * zoom);
             int drawX  = (640 / 2) - drawW / 2;
@@ -1379,6 +1467,7 @@ void App::loop() {
 
     // --- Cleanup ---
     saveSettings();
+    DebugLog::Flush(); // catch anything queued since the last periodic flush
     MusicBGM::pause();   // stop audio thread/ASND callbacks before tearing down GX
     // Blank the VI output before GX teardown to avoid purple/pink artefact frame
     VIDEO_SetBlack(true);
@@ -1438,10 +1527,17 @@ void App::loadSettings() {
 
         if (strcmp(key, "ssl_verify") == 0) {
             jellyfinClient.sslVerify = atoi(val) != 0;
+        } else if (strcmp(key, "high_bitrate") == 0) {
+            jellyfinClient.highBitrate = atoi(val) != 0;
+        } else if (strcmp(key, "video_res_mode") == 0) {
+            int v = atoi(val);
+            if (v >= 0 && v <= 2) jellyfinClient.videoResMode = (JellyfinClient::VideoResMode)v;
         } else if (strcmp(key, "music_enabled") == 0) {
             musicEnabled = atoi(val) != 0;
         } else if (strcmp(key, "bg_image_loading") == 0) {
             bgImageLoadingEnabled = atoi(val) != 0;
+        } else if (strcmp(key, "debug_log_file") == 0) {
+            debugLogFileEnabled = atoi(val) != 0;
         } else if (strcmp(key, "profile_count") == 0) {
             profileCount = atoi(val);
             if (profileCount > 0 && profileCount <= 32) profiles.resize((size_t)profileCount);
@@ -1495,8 +1591,11 @@ void App::saveSettings() {
     FILE* f = fopen(settingsPath.c_str(), "w");
     if (!f) return;
     fprintf(f, "ssl_verify=%d\n",      jellyfinClient.sslVerify ? 1 : 0);
+    fprintf(f, "high_bitrate=%d\n",    jellyfinClient.highBitrate ? 1 : 0);
+    fprintf(f, "video_res_mode=%d\n",  (int)jellyfinClient.videoResMode);
     fprintf(f, "music_enabled=%d\n",    musicEnabled ? 1 : 0);
     fprintf(f, "bg_image_loading=%d\n", bgImageLoadingEnabled ? 1 : 0);
+    fprintf(f, "debug_log_file=%d\n",   debugLogFileEnabled ? 1 : 0);
     fprintf(f, "profile_count=%d\n",   (int)profiles.size());
     for (int i = 0; i < (int)profiles.size(); i++) {
         const SavedProfile& p = profiles[i];

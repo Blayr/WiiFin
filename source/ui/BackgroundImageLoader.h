@@ -2,6 +2,7 @@
 #include <grrlib.h>
 #include <ogc/lwp.h>
 #include <string>
+#include "../jellyfin/JellyfinClient.h" // JellyfinItem, needed by Request::backdropItem
 
 class JellyfinClient;
 struct JellyfinAuth;
@@ -30,9 +31,17 @@ public:
 
     struct Request {
         std::string itemId;
+        std::string itemName; // cosmetic only -- labels the on-screen debug log
         int width       = 0;
         int height      = 0;
         int targetIndex = 0; // which grid slot (e.g. posterTextures[i]) this belongs to
+
+        // Backdrop requests (Continue Watching / Next Up cards) need the
+        // full item -- getItemBackdropBytes' Thumb -> series Backdrop ->
+        // Primary fallback chain depends on item.type/seriesId, not just
+        // the id. itemId/itemName above are unused when this is set.
+        bool         isBackdrop = false;
+        JellyfinItem backdropItem;
     };
 
     void init(JellyfinClient* client, const std::string* serverUrl, const JellyfinAuth* auth);
