@@ -15,6 +15,9 @@
 #include <netdb.h>
 #include <vector>
 #include <cmath>
+#include <functional>
+#include <algorithm>
+#include <strings.h>
 
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
@@ -74,6 +77,141 @@ int wii_tls_recv(void* ctx, unsigned char* buf, size_t len) {
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// DNS cache -- single slot, since WiiFin only ever talks to one Jellyfin
+// server per session. Avoids repeating a full lookup (a UDP query, subject
+// to loss on flaky Wi-Fi -- occasionally very slow to time out and retry)
+// on every single request when the server is addressed by hostname rather
+// than a raw IP literal.
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string    s_dnsHost;
+struct in_addr s_dnsAddr;
+bool           s_dnsValid = false;
+
+bool resolveHostCached(const std::string& host, struct in_addr& outAddr) {
+    if (inet_aton(host.c_str(), &outAddr) != 0) return true; // numeric IP -- no DNS needed
+    if (s_dnsValid && s_dnsHost == host) { outAddr = s_dnsAddr; return true; }
+    struct hostent* he = net_gethostbyname(host.c_str());
+    if (!he || he->h_length > (int)sizeof(outAddr)) return false;
+    memcpy(&outAddr, he->h_addr, he->h_length);
+    s_dnsHost = host; s_dnsAddr = outAddr; s_dnsValid = true;
+    return true;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Plain-HTTP keep-alive connection reuse -- avoids paying a fresh TCP
+// handshake on every single request. File-static rather than a JellyfinClient
+// member: there's only ever one JellyfinClient instance for the app's
+// lifetime, and keeping mbedTLS/socket plumbing out of the header avoids
+// pulling those includes into every file that includes JellyfinClient.h.
+// HTTPS keep-alive is intentionally NOT included here -- its connection
+// setup already intersects with the documented "orphaned socket after
+// MPlayer teardown" retry logic (see httpsRequest below), and layering new
+// connection-lifecycle state on top of that without hardware testing is a
+// bigger risk than the win is worth right now.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct PlainKeepAlive {
+    bool        active = false;
+    std::string host;
+    int         port   = 0;
+    s32         sock   = -1;
+};
+PlainKeepAlive s_plainConn;
+
+void closePlainKeepAlive() {
+    if (s_plainConn.active && s_plainConn.sock >= 0) net_close(s_plainConn.sock);
+    s_plainConn = PlainKeepAlive{};
+}
+
+// Incrementally consumes a chunked-encoded body from `readSome`, appending
+// decoded bytes to `out`. Parses strictly by tracked byte offset (not by
+// scanning for a "0\r\n\r\n"-shaped byte sequence, which could false-positive
+// inside binary/JSON chunk data) so it can tell a genuine terminator from
+// coincidental bytes. Returns true once the terminator chunk (and any
+// trailer headers) is fully consumed -- false on any read failure/overflow,
+// in which case the connection must not be reused afterward.
+bool readChunkedBody(const std::function<int(void*, size_t)>& readSome,
+                      char* rawBuf, int rawBufCap, int bodyStart, int& rawLen,
+                      std::string& out) {
+    int pos = bodyStart;
+    for (;;) {
+        int crlf = -1;
+        for (int i = pos; i + 1 < rawLen; i++)
+            if (rawBuf[i] == '\r' && rawBuf[i + 1] == '\n') { crlf = i; break; }
+        while (crlf < 0) {
+            if (rawLen >= rawBufCap - 1) return false;
+            int n = readSome(rawBuf + rawLen, (size_t)(rawBufCap - 1 - rawLen));
+            if (n <= 0) return false;
+            int searchFrom = rawLen > pos ? rawLen - 1 : pos;
+            rawLen += n;
+            for (int i = searchFrom; i + 1 < rawLen; i++)
+                if (rawBuf[i] == '\r' && rawBuf[i + 1] == '\n') { crlf = i; break; }
+        }
+
+        size_t chunkSize = 0;
+        for (int i = pos; i < crlf; i++) {
+            char c = rawBuf[i];
+            if (c == ';') break; // chunk extension
+            unsigned digit;
+            if (c >= '0' && c <= '9')      digit = (unsigned)(c - '0');
+            else if (c >= 'a' && c <= 'f') digit = (unsigned)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') digit = (unsigned)(c - 'A' + 10);
+            else break;
+            chunkSize = chunkSize * 16 + digit;
+        }
+        pos = crlf + 2;
+
+        if (chunkSize == 0) {
+            // Trailer section: zero or more "Name: value\r\n" lines,
+            // terminated by one blank "\r\n" line. With no trailers (the
+            // common case) that blank line is the *only* thing left after
+            // the "0\r\n" we already consumed into pos -- i.e. just 2 bytes,
+            // not the 4-byte "\r\n\r\n" this used to (incorrectly) look for
+            // starting at pos, which doesn't exist for a trailer-less
+            // response and caused an unbounded wait for bytes that were
+            // never coming (previously surfacing as a full 15s stall on
+            // every single chunked response once keep-alive meant the
+            // connection no longer closed to paper over it).
+            for (;;) {
+                int lineEnd = -1;
+                for (int i = pos; i + 1 < rawLen; i++)
+                    if (rawBuf[i] == '\r' && rawBuf[i + 1] == '\n') { lineEnd = i; break; }
+                if (lineEnd >= 0) {
+                    bool blankLine = (lineEnd == pos);
+                    pos = lineEnd + 2;
+                    if (blankLine) return true; // end of trailers -- body complete
+                    continue; // a trailer header line -- discard, look for the next
+                }
+                if (rawLen >= rawBufCap - 1) return false;
+                int n = readSome(rawBuf + rawLen, (size_t)(rawBufCap - 1 - rawLen));
+                if (n <= 0) return false;
+                rawLen += n;
+            }
+        }
+
+        while (rawLen - pos < (int)chunkSize + 2) {
+            if (rawLen >= rawBufCap - 1) return false; // chunk too big for our fixed buffer
+            int n = readSome(rawBuf + rawLen, (size_t)(rawBufCap - 1 - rawLen));
+            if (n <= 0) return false;
+            rawLen += n;
+        }
+        out.append(rawBuf + pos, chunkSize);
+        pos += (int)chunkSize + 2;
+    }
+}
+
+} // namespace
+
+void JellyfinClient::closeKeepAliveConnection() {
+    closePlainKeepAlive();
+}
 
 // ---------------------------------------------------------------------------
 
@@ -546,42 +684,8 @@ int JellyfinClient::httpRequest(const std::string& url,
 
     u64 plainT0 = gettime();
 
-    // Resolve host — try as a numeric IPv4 literal first; fall back to DNS.
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (inet_aton(host.c_str(), &addr.sin_addr) == 0) {
-        struct hostent* he = net_gethostbyname(host.c_str());
-        if (!he) { errMsg = "DNS failed: " + host; return -1; }
-        if (he->h_length > (int)sizeof(addr.sin_addr)) { errMsg = "DNS: unexpected address length"; return -1; }
-        memcpy(&addr.sin_addr, he->h_addr, he->h_length);
-    }
-
-    s32 sock = net_socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { errMsg = "socket() failed"; return -1; }
-
-    {
-        int cr = net_connect(sock, (struct sockaddr*)&addr, sizeof(addr));
-        if (cr < 0) {
-            if (cr == -EINPROGRESS || cr == -EAGAIN) {
-                fd_set wfds;
-                FD_ZERO(&wfds); FD_SET(sock, &wfds);
-                struct timeval tv = {10, 0};
-                if (net_select(sock + 1, nullptr, &wfds, nullptr, &tv) <= 0) {
-                    errMsg = "connect() timed out";
-                    net_close(sock);
-                    return -1;
-                }
-            } else {
-                errMsg = "connect() failed";
-                net_close(sock);
-                return -1;
-            }
-        }
-    }
-    // libogc net_connect leaves the socket O_NONBLOCK after its internal polling loop — restore blocking.
-    { u32 nb = 0; net_ioctl(sock, FIONBIO, &nb); }
+    struct in_addr resolvedAddr;
+    if (!resolveHostCached(host, resolvedAddr)) { errMsg = "DNS failed: " + host; return -1; }
 
     std::string authHdr = authToken.empty() ? "" : (", Token=\"" + authToken + "\"");
     std::string ctHdr   = contentType.empty() ? "" : ("Content-Type: " + contentType + "\r\n");
@@ -591,7 +695,7 @@ int JellyfinClient::httpRequest(const std::string& url,
     int reqLen = snprintf(req, sizeof(req),
         "%s %s HTTP/1.1\r\n"
         "Host: %s\r\n"
-        "Connection: close\r\n"
+        "Connection: keep-alive\r\n"
         "X-Emby-Authorization: " WIIFIN_CLIENT_HDR "%s\r\n"
         "%s"
         "Content-Length: %zu\r\n"
@@ -605,14 +709,57 @@ int JellyfinClient::httpRequest(const std::string& url,
     );
     if (reqLen >= (int)sizeof(req)) {
         errMsg = "Request headers too large";
-        net_close(sock);
         return -1;
     }
 
     SYS_Report("[http] %s http://%s%s\n", method.c_str(), hostHdr.c_str(), basePath.c_str());
 
-    // Send request headers + body, looping to handle partial writes and EAGAIN.
-    {
+    int  status = 0;
+    bool reused = false;
+
+    // At most 2 attempts: first try reusing a held keep-alive connection to
+    // this exact host:port if one exists; if that turns out to be dead
+    // (server-side idle timeout, NAT/router state expiry -- normal, not an
+    // error), drop it and retry once with a fresh connection. A failure on
+    // an already-fresh connection is real and not retried further.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        bool tryReuse = (attempt == 0) && s_plainConn.active &&
+                        s_plainConn.host == host && s_plainConn.port == port;
+        s32 sock;
+        if (tryReuse) {
+            sock   = s_plainConn.sock;
+            reused = true;
+        } else {
+            if (s_plainConn.active) closePlainKeepAlive(); // stale/wrong-host connection, or retrying after reuse failure
+            reused = false;
+            sock = net_socket(AF_INET, SOCK_STREAM, 0);
+            if (sock < 0) { errMsg = "socket() failed"; return -1; }
+            struct sockaddr_in addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port   = htons(port);
+            addr.sin_addr   = resolvedAddr;
+            int cr = net_connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+            if (cr < 0) {
+                if (cr == -EINPROGRESS || cr == -EAGAIN) {
+                    fd_set wfds;
+                    FD_ZERO(&wfds); FD_SET(sock, &wfds);
+                    struct timeval tv = {10, 0};
+                    if (net_select(sock + 1, nullptr, &wfds, nullptr, &tv) <= 0) {
+                        errMsg = "connect() timed out";
+                        net_close(sock);
+                        return -1;
+                    }
+                } else {
+                    errMsg = "connect() failed";
+                    net_close(sock);
+                    return -1;
+                }
+            }
+            // libogc net_connect leaves the socket O_NONBLOCK after its internal polling loop — restore blocking.
+            u32 nb = 0; net_ioctl(sock, FIONBIO, &nb);
+        }
+
         auto sendAll = [&](const void* data, int len) -> bool {
             const char* p = (const char*)data;
             int sent = 0;
@@ -630,68 +777,149 @@ int JellyfinClient::httpRequest(const std::string& url,
             }
             return true;
         };
-        if (!sendAll(req, reqLen) ||
-            (!body.empty() && !sendAll(body.c_str(), (int)body.size()))) {
-            errMsg = "Failed to send request";
+        auto readSome = [&](void* buf, size_t len) -> int {
+            /* Overall wall-clock budget, not just a per-select timeout: a
+             * socket left in a confused state by IOS (see the comment above
+             * the reuse-retry loop) could in principle have select() report
+             * "readable" immediately while read() keeps returning EAGAIN
+             * forever, spinning tight with no single call ever hitting the
+             * 15 s select timeout below. Bail once total elapsed time
+             * crosses it regardless of how we got here. */
+            u64 deadline = gettime() + secs_to_ticks(15);
+            for (;;) {
+                if (gettime() >= deadline) return 0;
+                fd_set rfds; FD_ZERO(&rfds); FD_SET(sock, &rfds);
+                struct timeval stv = {15, 0};
+                if (net_select(sock + 1, &rfds, nullptr, nullptr, &stv) <= 0) return 0;
+                int n = net_read(sock, buf, (u32)len);
+                if (n > 0) return n;
+                if (n == 0) return 0;
+                if (n == -EAGAIN || n == -EWOULDBLOCK) continue;
+                return 0;
+            }
+        };
+
+        if (!sendAll(req, reqLen) || (!body.empty() && !sendAll(body.c_str(), (int)body.size()))) {
             net_close(sock);
+            s_plainConn = PlainKeepAlive{};
+            if (reused) continue; // stale reused connection -- retry fresh
+            errMsg = "Failed to send request";
             return -1;
         }
-    }
 
-    static char rawBuf[256 * 1024];
-    int rawLen = 0;
-    char buf[4096];
-    while (true) {
-        /* 15 s per-read timeout — prevents a hung server from blocking forever */
-        {
-            fd_set rfds; FD_ZERO(&rfds); FD_SET(sock, &rfds);
-            struct timeval stv = {15, 0};
-            if (net_select(sock + 1, &rfds, nullptr, nullptr, &stv) <= 0)
-                break; /* timeout or select error */
+        static char rawBuf[256 * 1024];
+        int rawLen = 0;
+        int headersLen = -1;
+        while (headersLen < 0) {
+            if (rawLen >= (int)sizeof(rawBuf) - 1) break;
+            int n = readSome(rawBuf + rawLen, sizeof(rawBuf) - 1 - (size_t)rawLen);
+            if (n <= 0) break;
+            rawLen += n;
+            rawBuf[rawLen] = '\0';
+            const char* sep = strstr(rawBuf, "\r\n\r\n");
+            if (sep) headersLen = (int)(sep - rawBuf);
         }
-        int n = net_read(sock, buf, sizeof(buf) - 1);
-        if (n > 0) {
-            int canCopy = (int)(sizeof(rawBuf) - 1) - rawLen;
-            if (canCopy > 0) {
-                if (n < canCopy) canCopy = n;
-                memcpy(rawBuf + rawLen, buf, (size_t)canCopy);
-                rawLen += canCopy;
+        if (headersLen < 0) {
+            net_close(sock);
+            s_plainConn = PlainKeepAlive{};
+            if (reused) continue; // stale reused connection gave us nothing -- retry fresh
+            errMsg = rawLen == 0 ? "No response from server (check server URL / port)"
+                                 : "Invalid HTTP response (server may require HTTPS)";
+            u32 plainMs = (u32)ticks_to_millisecs(gettime() - plainT0);
+            DebugLog::Log("x %s (%u ms)", errMsg.c_str(), plainMs);
+            return -1;
+        }
+
+        if (rawLen >= 12 && strncmp(rawBuf, "HTTP/", 5) == 0) {
+            const char* sp = strchr(rawBuf, ' ');
+            if (sp) status = atoi(sp + 1);
+        }
+
+        auto findHeader = [&](const char* name) -> const char* {
+            int nlen = (int)strlen(name);
+            for (int i = 0; i + nlen < headersLen; i++) {
+                if (strncasecmp(rawBuf + i, name, (size_t)nlen) == 0 && (i == 0 || rawBuf[i - 1] == '\n')) {
+                    const char* v = rawBuf + i + nlen;
+                    while (*v == ' ') v++;
+                    return v;
+                }
             }
-        } else if (n == 0) {
-            break; // connection closed
-        } else if (n == -EAGAIN || n == -EWOULDBLOCK) {
-            continue; // spurious EAGAIN — retry
-        } else {
-            break; // error
+            return nullptr;
+        };
+        bool serverWantsClose = false;
+        if (const char* v = findHeader("connection:")) {
+            if (strncasecmp(v, "close", 5) == 0) serverWantsClose = true;
         }
-    }
-    net_close(sock);
-    rawBuf[rawLen] = '\0';
+        long contentLength = -1;
+        if (const char* v = findHeader("content-length:")) contentLength = atol(v);
+        bool chunked = false;
+        if (const char* v = findHeader("transfer-encoding:")) {
+            if (strncasecmp(v, "chunked", 7) == 0) chunked = true;
+        }
+        DebugLog::Log("http: len=%ld chunked=%d close=%d", contentLength, (int)chunked, (int)serverWantsClose);
 
-    int status = 0;
-    if (rawLen >= 12 && strncmp(rawBuf, "HTTP/", 5) == 0) {
-        const char* sp = strchr(rawBuf, ' ');
-        if (sp) status = atoi(sp + 1);
+        int  bodyStart = headersLen + 4;
+        bool canKeepAlive;
+        if (chunked) {
+            canKeepAlive = readChunkedBody(readSome, rawBuf, (int)sizeof(rawBuf), bodyStart, rawLen, responseBody)
+                           && !serverWantsClose;
+        } else if (contentLength >= 0) {
+            int need = (int)contentLength - (rawLen - bodyStart);
+            bool ok = true;
+            while (need > 0 && rawLen < (int)sizeof(rawBuf) - 1) {
+                int n = readSome(rawBuf + rawLen, std::min((size_t)need, sizeof(rawBuf) - 1 - (size_t)rawLen));
+                if (n <= 0) { ok = false; break; }
+                rawLen += n; need -= n;
+            }
+            int haveNow = rawLen - bodyStart;
+            int useLen  = std::min(haveNow, (int)contentLength);
+            if (useLen < 0) useLen = 0;
+            responseBody.assign(rawBuf + bodyStart, (size_t)useLen);
+            canKeepAlive = ok && !serverWantsClose && (haveNow >= (int)contentLength);
+        } else {
+            // No Content-Length and not chunked -- there is no reliable way
+            // left to tell "response complete" from "still coming", since
+            // we asked for keep-alive and the server won't close to signal
+            // completion. Give any more data a brief window (previously
+            // this read until the peer closed, which could take the full
+            // 15s read timeout now that closing isn't going to happen) and
+            // then just accept what's already been received -- a server
+            // that omits both headers has, in every case seen so far, sent
+            // the whole thing in the same flush as the headers anyway.
+            for (;;) {
+                if (rawLen >= (int)sizeof(rawBuf) - 1) break;
+                fd_set rfds; FD_ZERO(&rfds); FD_SET(sock, &rfds);
+                struct timeval stv = {0, 300000}; // 300 ms, not readSome's 15 s
+                if (net_select(sock + 1, &rfds, nullptr, nullptr, &stv) <= 0) break;
+                int n = net_read(sock, rawBuf + rawLen, (u32)(sizeof(rawBuf) - 1 - (size_t)rawLen));
+                if (n <= 0) break;
+                rawLen += n;
+            }
+            responseBody.assign(rawBuf + bodyStart, (size_t)(rawLen - bodyStart));
+            canKeepAlive = false;
+        }
+
+        if (canKeepAlive) {
+            s_plainConn.active = true;
+            s_plainConn.host   = host;
+            s_plainConn.port   = port;
+            s_plainConn.sock   = sock;
+        } else {
+            net_close(sock);
+            s_plainConn = PlainKeepAlive{};
+        }
+        break;
     }
-    SYS_Report("[http] status=%d rawLen=%d\n", status, rawLen);
+
+    SYS_Report("[http] status=%d\n", status);
     u32 plainMs = (u32)ticks_to_millisecs(gettime() - plainT0);
     if (status == 0) {
-        errMsg = rawLen == 0 ? "No response from server (check server URL / port)"
-                             : "Invalid HTTP response (server may require HTTPS)";
+        if (errMsg.empty()) errMsg = "No response from server (check server URL / port)";
         DebugLog::Log("x %s (%u ms)", errMsg.c_str(), plainMs);
         return -1;
     }
-    const char* sep = strstr(rawBuf, "\r\n\r\n");
-    if (sep) {
-        int headersLen = (int)(sep - rawBuf);
-        const char* bodyPtr = sep + 4;
-        int bodyLen = rawLen - headersLen - 4;
-        if (bodyLen < 0) bodyLen = 0;
-        responseBody = decodeChunked(rawBuf, headersLen, bodyPtr, bodyLen);
-    } else {
-        responseBody = "";
-    }
-    DebugLog::Log("<- %d (%u B, %u ms)", status, (unsigned)responseBody.size(), plainMs);
+    DebugLog::Log("<- %d (%u B, %u ms)%s", status, (unsigned)responseBody.size(), plainMs,
+                  reused ? " [reused]" : "");
     recordThroughputSample(responseBody.size(), plainMs);
     return status;
 }
@@ -722,18 +950,14 @@ int JellyfinClient::httpsRequest(const std::string& host, int port,
                                   std::string& responseBody) {
     int httpStatus = -1;
 
-    // Resolve address once — reused across retry attempts.
-    // Try as a numeric IPv4 literal first; fall back to DNS.
+    // Resolve address once — reused across retry attempts. Cached (see
+    // resolveHostCached) so repeat HTTPS requests to the same host skip
+    // the lookup entirely, not just within this one call's retry loop.
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(port);
-    if (inet_aton(host.c_str(), &addr.sin_addr) == 0) {
-        struct hostent* he = net_gethostbyname(host.c_str());
-        if (!he) { errMsg = "DNS failed: " + host; return -1; }
-        if (he->h_length > (int)sizeof(addr.sin_addr)) { errMsg = "DNS: unexpected address length"; return -1; }
-        memcpy(&addr.sin_addr, he->h_addr, he->h_length);
-    }
+    if (!resolveHostCached(host, addr.sin_addr)) { errMsg = "DNS failed: " + host; return -1; }
 
     /* Retry loop for transient IOS send/recv failures.
      *

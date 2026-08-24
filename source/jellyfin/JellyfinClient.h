@@ -131,6 +131,16 @@ public:
     bool isNetworkReady() const { return networkReady; }
     const std::string& lastError() const { return errMsg; }
 
+    // Closes any open plain-HTTP keep-alive connection (see httpRequest's
+    // connection-reuse logic) and drops the socket. Call before handing
+    // control to wii_player_play() -- MPlayer needs a large contiguous heap
+    // and every held resource counts (same reasoning as
+    // LibraryView::releaseForPlayback() freeing textures/loader threads).
+    // Safe to call when nothing is open. The connection reopens
+    // transparently on the next request either way; this only affects
+    // memory pressure during playback, not correctness.
+    void closeKeepAliveConnection();
+
     // Fetch user views (libraries: movies, tvshows, music...)
     bool getLibraries(const std::string& serverUrl,
                       const JellyfinAuth& auth,

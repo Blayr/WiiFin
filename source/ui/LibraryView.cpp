@@ -574,6 +574,7 @@ void LibraryView::freeNextUpTextures() {
 // Balloc() to fail inside _dtoa_r (called by MPlayer's diagnostic printf), producing
 // an "Invalid read from 0x00000010" DSI crash. Releasing them here frees ~1–2 MB.
 void LibraryView::releaseForPlayback() {
+    client.closeKeepAliveConnection();
     if (userIconTex) { GRRLIB_FreeTexture(userIconTex); userIconTex = nullptr; }
     freePosters();
     posterTexturesStale = true;

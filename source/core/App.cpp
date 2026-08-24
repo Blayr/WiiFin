@@ -339,6 +339,18 @@ static bool runPlaySession(JellyfinClient& client,
             SYS_Report("[DBG] wii_player_play RETURNED reason=%d loading=%d\n",
                        reason, (int)g_wiifin_loading_active);
 
+            /* MPlayer's own orphaned stream socket/cache2 thread can leave
+             * the IOS network IPC queue in a busy/inconsistent state right
+             * after longjmp exit (see httpsRequest's retry-loop comment for
+             * the same issue on the HTTPS side). A held keep-alive
+             * connection opened *before* this playback session started is
+             * exactly the kind of leftover resource that can land in that
+             * state -- drop it unconditionally so the very next request
+             * (reportPlaybackStopped below, or whatever runs once we're
+             * back in the UI) always opens a fresh connection instead of
+             * risking a reuse attempt against a socket IOS considers dead. */
+            client.closeKeepAliveConnection();
+
             /* After play returns, GRRLIB was exited by mpgxInit's cleanup.
              * Re-init it for the app UI. */
             g_wiifin_grrlib_render_cb  = nullptr;
