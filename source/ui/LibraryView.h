@@ -28,13 +28,31 @@ public:
     void render(ir_t& ir);
     void drawLoadingFrame(); // draw+flush one spinning ring frame (also called by network callback)
 
+    // Runs fn on a background thread while animating the loading spinner
+    // (and the on-screen debug log) on the main thread -- the same
+    // mechanism used for every library/detail fetch. Exposed publicly so
+    // App.cpp's playback-teardown network calls (report stopped / delete
+    // encoding) get the same live spinner instead of a frozen frame while
+    // they block.
+    void runWithLoading(std::function<void()> fn);
+
+    // Narrow subset of reinitAfterPlayback(): just re-point font/ringTex at
+    // freshly (re)loaded assets, without touching state or the
+    // hasPlaybackReturnState restoration logic. GRRLIB_Init() invalidates
+    // previously loaded fonts/textures, so runPlaySession must call this
+    // before any lv.runWithLoading()/drawLoadingFrame() use while still
+    // mid-teardown -- reinitAfterPlayback() itself only runs once App::loop()
+    // regains control, which is too late for the teardown spinner.
+    void reattachLoadingAssets(GRRLIB_ttfFont* f, GRRLIB_texImg* ring);
+
     // Free all textures and heavy heap data before starting playback.
     // Preserves pendingPlay* fields which the caller needs.
     // Called by App just before wii_player_play() to give MPlayer room to allocate.
     void releaseForPlayback();
 
     // Re-attach asset pointers (which change after reloadAssets()) and
-    // return to the LibsReady state without re-fetching libraries over the network.
+    // restore the view from which video playback was launched when its cached
+    // data is still available.
     void reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
                              GRRLIB_texImg* cursor, GRRLIB_texImg* ring);
 
@@ -74,6 +92,10 @@ private:
     bool                  asyncPosterLoadingEnabled;
     BackgroundImageLoader posterLoader;
     BackgroundImageLoader detailLoader; // single-image batches for the detail view's poster
+    BackgroundImageLoader activityLoader; // Continue Watching / Next Up card backdrops
+    // Disambiguates activityLoader slots shared between the two card rows --
+    // Continue Watching uses targetIndex 0..2, Next Up uses 100..102.
+    static const int NEXTUP_TARGET_OFFSET = 100;
 
     enum class State {
         LibsInit,     // render loading screen, then transition
@@ -95,6 +117,7 @@ private:
         MusicTracksReady,// show track list for an album
         CollectionsLoad,      // blocking: fetch BoxSet collections
         FavoritesLoad,        // blocking: fetch favourite movies
+        TVFavoritesLoad,      // blocking: fetch favourite series
         MovieSuggestionsLoad, // blocking: fetch continue-watching + recently-added movies
         MovieSuggestionsReady,// show suggestions tab (two horizontal rows)
         TVSuggestionsLoad,    // blocking: fetch continue-watching episodes + recently-added series
@@ -113,6 +136,13 @@ private:
         Error
     };
     State state = State::LibsInit;
+
+    // Saved immediately before video playback begins. releaseForPlayback()
+    // discards textures but keeps the navigation data, so returning can reload
+    // the exact detail page rather than falling back to a broader view.
+    State playbackReturnState = State::LibsReady;
+    bool  hasPlaybackReturnState = false;
+    bool  posterTexturesStale = false; // textures released for MPlayer; reload on returning to a poster grid
 
     // Libraries
     std::vector<JellyfinLibrary> libraries;
@@ -223,6 +253,8 @@ private:
     int  nextUpSel           = 0;
     int  homePage            = 0; // 0=libs, 1=activite
     int  actRow              = 0; // 0=CW row, 1=NextUp row (activity page)
+    bool activityTexturesStale = false; // freed before video playback; reload on opening Activity
+    bool activityLoaded        = false; // Continue Watching/Next Up fetched at all yet this session
     bool detailIsEpisodeHint = false;
 
     // Movie tabs (only active when currentLibType == "movies")
@@ -283,6 +315,7 @@ private:
     void loadContinueWatching();
     void loadNextUp();
     void reloadActivityTextures(); // re-fetch backdrop images after playback release
+    void submitActivityImageBatch(); // async-submit whichever CW/Next Up slots lack a texture
     void buildActDisplayStrings(); // pre-compute truncated titles for activity cards
     void freeCWTextures();
     void freeNextUpTextures();
@@ -293,6 +326,7 @@ private:
     void loadEpisodes();
     void loadMovieCollections();
     void loadMovieFavorites();
+    void loadTVFavorites();
     void loadGlobalFavorites();
     void loadMovieSuggestions();
     void freeMovieSuggestions();
@@ -303,7 +337,6 @@ private:
     void loadMusicSuggestions();
     void freeMusicSuggestions();
     void loadPlaylistsTab();
-    void runWithLoading(std::function<void()> fn);
     void freePosters();
     void freeDetail();
     void drawGradientBG();

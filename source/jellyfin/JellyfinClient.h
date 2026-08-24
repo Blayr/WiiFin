@@ -152,12 +152,24 @@ public:
                             std::vector<JellyfinItem>& out,
                             int& totalCount);
 
-    // Fetch raw image bytes for an item's primary thumbnail
+    // Fetch raw image bytes for an item's primary thumbnail. itemName is
+    // optional and purely cosmetic -- used to label the on-screen debug log
+    // ("Poster: <name>") since itemId alone (a GUID) isn't useful there.
     bool getItemImageBytes(const std::string& serverUrl,
                            const JellyfinAuth& auth,
                            const std::string& itemId,
                            int maxWidth, int maxHeight,
-                           std::string& outBytes);
+                           std::string& outBytes,
+                           const std::string& itemName = "");
+
+    // Like getItemImageBytes, but reads only from the on-disk cache -- never
+    // touches the network. Returns false on any cache miss (including a
+    // disabled/empty cacheDir), leaving outBytes untouched. Lets callers that
+    // want to skip async/network loading for already-cached images check
+    // cheaply before falling back to getItemImageBytes.
+    bool getCachedItemImageBytes(const std::string& itemId,
+                                 int maxWidth, int maxHeight,
+                                 std::string& outBytes);
 
     // Fetch the best landscape image for activity cards:
     //   Episode → Images/Thumb, fallback series Backdrop, then Primary
@@ -167,6 +179,19 @@ public:
                               const JellyfinItem& item,
                               int maxWidth, int maxHeight,
                               std::string& outBytes);
+
+    // Like getItemBackdropBytes, but walks the same Thumb -> series Backdrop
+    // -> Primary fallback chain reading only from the on-disk cache -- never
+    // touches the network. Returns true once the chain reaches a resolved
+    // answer purely from cache (real bytes, or a confirmed-absent marker at
+    // every tier up to and including Primary -- true with outBytes left
+    // empty, meaning "no image, and we don't need the network to know
+    // that"). Returns false the moment it hits an unresolved tier (no cache
+    // entry at all yet, positive or negative), since a real fallback chain
+    // can't be walked without querying the server there.
+    bool getCachedItemBackdropBytes(const JellyfinItem& item,
+                                    int maxWidth, int maxHeight,
+                                    std::string& outBytes);
 
     // Fetch the server name from /System/Info (fills auth.serverName)
     bool getServerName(const std::string& serverUrl,
@@ -193,6 +218,15 @@ public:
 
     // Fetch favourite movies from a library (paginated)
     bool getFavoriteMovies(const std::string& serverUrl,
+                           const JellyfinAuth& auth,
+                           const std::string& parentId,
+                           int startIndex, int limit,
+                           std::vector<JellyfinItem>& out,
+                           int& totalCount);
+
+    // Fetch favourite series from a TV library (paginated) -- same as
+    // getFavoriteMovies but IncludeItemTypes=Series.
+    bool getFavoriteSeries(const std::string& serverUrl,
                            const JellyfinAuth& auth,
                            const std::string& parentId,
                            int startIndex, int limit,
@@ -358,6 +392,41 @@ public:
 
     bool sslVerify = true;   // true = verify certificate (set false to allow self-signed)
 
+    // Measured on real hardware over the Wii's official USB LAN adapter:
+    // ~4.2 Mbps sustained receive throughput on an otherwise-idle Wii (FTP
+    // bulk transfer), and real playback leaves less headroom than that since
+    // the same weak CPU is also decoding MPEG2 + driving GX. 3 Mbps is a
+    // safety margin under that ceiling, not the ceiling itself. WiFi is
+    // substantially slower and unmeasured here -- this is opt-in and meant
+    // for wired connections only (no reliable wired/wireless detection is
+    // exposed by libogc, so it's a manual Settings toggle rather than
+    // automatic).
+    bool highBitrate = false; // true = 3 Mbps transcode target instead of 1 Mbps
+
+    // Transcode resolution. Unlike wired/wireless (no libogc API exposes
+    // that), the Wii *can* reliably tell us whether the connected cable is
+    // progressive (component/HDMI adapter) or interlaced-only (composite/
+    // S-Video) -- see VIDEO_GetCurrentTvMode()'s VI_PROGRESSIVE vs
+    // VI_INTERLACE/VI_NON_INTERLACE. Composite's real resolvable detail
+    // (interlacing + ~330 TVL analog bandwidth) is well under 848x480, so
+    // decoding full detail there just burns CPU headroom on this weak
+    // hardware for pixels the display can't actually show.
+    enum class VideoResMode { Auto = 0, Full = 1, Reduced = 2 };
+    VideoResMode videoResMode = VideoResMode::Auto;
+    // Set once at startup from VIDEO_GetCurrentTvMode(); drives Auto's choice.
+    bool isProgressiveVideo = true;
+
+    // Resolves videoResMode (+ isProgressiveVideo for Auto) to an actual
+    // transcode target: Full/progressive-Auto = 848x480 (this app's normal
+    // ceiling); Reduced/interlaced-Auto = 480x480, a rough match for
+    // composite's real resolvable detail.
+    void getEffectiveResolution(int& w, int& h) const {
+        bool full = (videoResMode == VideoResMode::Full) ||
+                    (videoResMode == VideoResMode::Auto && isProgressiveVideo);
+        w = full ? 848 : 480;
+        h = 480;
+    }
+
     // Directory to cache fetched image bytes in, e.g. "sd:/apps/WiiFin/cache/"
     // (trailing slash). Empty = caching disabled (no writable device found).
     std::string cacheDir;
@@ -377,10 +446,18 @@ private:
     // Falls back to a plain httpRequest() when cacheDir is empty. Cache hits skip
     // the network entirely; cache misses fetch normally and best-effort save the
     // response for next time (write failures are silent/non-fatal).
+    // label is what a cache-miss network fetch shows in the on-screen debug
+    // log, e.g. "Poster: Inception" or "Backdrop: The Office".
     bool fetchImageCached(const std::string& cacheKey,
                           const std::string& url,
                           const std::string& authToken,
-                          std::string& outBytes);
+                          std::string& outBytes,
+                          const std::string& label);
+
+    // Disk-only half of fetchImageCached: reads cacheDir + cacheKey into
+    // outBytes if present. No network I/O, no TTL (entries only ever clear
+    // via Settings' "Clear Image Cache" action).
+    bool tryReadCachedImage(const std::string& cacheKey, std::string& outBytes);
 
     // Low-level HTTP/HTTPS: auto-detects scheme, returns HTTP status code
     int httpRequest(const std::string& url,

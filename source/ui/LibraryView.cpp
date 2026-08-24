@@ -9,6 +9,7 @@ extern unsigned int  data_icon_user_png_len;
 #include <ogcsys.h>
 #include <cmath>
 #include "../core/Utils.h"
+#include "../core/DebugLog.h"
 #include <stdio.h>
 #include <string.h>
 #include <malloc.h>
@@ -170,6 +171,7 @@ LibraryView::LibraryView(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf, GRRLIB_texImg* c
     if (asyncPosterLoadingEnabled) {
         posterLoader.init(&client, &serverUrl, &auth);
         detailLoader.init(&client, &serverUrl, &auth);
+        activityLoader.init(&client, &serverUrl, &auth);
     }
 }
 
@@ -177,6 +179,7 @@ void LibraryView::shutdownImageLoader() {
     if (asyncPosterLoadingEnabled) {
         posterLoader.shutdown();
         detailLoader.shutdown();
+        activityLoader.shutdown();
     }
 }
 
@@ -309,6 +312,11 @@ const char* LibraryView::labelForType(const std::string& type) {
     return "MEDIA";
 }
 
+void LibraryView::reattachLoadingAssets(GRRLIB_ttfFont* f, GRRLIB_texImg* ring) {
+    font    = f;
+    ringTex = ring;
+}
+
 void LibraryView::drawLoadingFrame() {
     // Time-based angle: one full rotation per 1.5 seconds, independent of vsync/network speed.
     float angle = (float)(ticks_to_millisecs(gettime()) % 1500) * (360.0f / 1500.0f);
@@ -319,6 +327,7 @@ void LibraryView::drawLoadingFrame() {
         GRRLIB_SetMidHandle(ringTex, false);
     }
     SoundFX::tickLoading();
+    DebugLog::Render(font);
     // Flush to screen and block on vsync. This serves two purposes:
     // 1. The spinner actually appears and animates on screen.
     // 2. The ~16 ms vsync wait yields the CPU to the worker thread
@@ -360,21 +369,34 @@ void LibraryView::freeDetail() {
 
 void LibraryView::loadPosters() {
     freePosters(); // also cancels any leftover background poster loads
+    posterTexturesStale = false;
     int n = (int)items.size();
     if (n > POSTER_VISIBLE) n = POSTER_VISIBLE;
 
     if (asyncPosterLoadingEnabled) {
-        // Fire off the batch and show the grid immediately (posterLabels[i]
-        // below stands in for each poster until its fetch completes -- see
-        // PostersReady/GlobalFavoritesReady's pump loop in update()).
+        // Cached posters load straight off the SD card here, synchronously --
+        // no network round trip needed, so there's nothing to gain by
+        // deferring them to the background loader. Only genuine cache misses
+        // go into the batch; posterLabels[i] below stands in for those until
+        // their fetch completes -- see PostersReady/GlobalFavoritesReady's
+        // pump loop in update().
         BackgroundImageLoader::Request reqs[POSTER_VISIBLE];
+        int r = 0;
         for (int i = 0; i < n; i++) {
-            reqs[i].itemId      = items[i].id;
-            reqs[i].width       = POSTER_W;
-            reqs[i].height      = POSTER_H;
-            reqs[i].targetIndex = i;
+            std::string imgBytes;
+            if (client.getCachedItemImageBytes(items[i].id, POSTER_W, POSTER_H, imgBytes)) {
+                posterTextures[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            } else {
+                reqs[r].itemId      = items[i].id;
+                reqs[r].itemName    = items[i].name;
+                reqs[r].width       = POSTER_W;
+                reqs[r].height      = POSTER_H;
+                reqs[r].targetIndex = i;
+                r++;
+            }
         }
-        posterLoader.submitBatch(reqs, n);
+        posterLoader.submitBatch(reqs, r);
+        DebugLog::Log("Posters: %d cached, %d fetching", n - r, r);
     } else {
         // Fetch and decode all posters inside one background pass so the spinner
         // keeps animating through both network I/O and JPEG decode.
@@ -383,7 +405,7 @@ void LibraryView::loadPosters() {
         runWithLoading([&]() {
             for (int i = 0; i < n; i++) {
                 std::string imgBytes;
-                client.getItemImageBytes(serverUrl, auth, items[i].id, POSTER_W, POSTER_H, imgBytes);
+                client.getItemImageBytes(serverUrl, auth, items[i].id, POSTER_W, POSTER_H, imgBytes, items[i].name);
                 if (!imgBytes.empty())
                     posterTextures[i] = loadJPEGTexture(
                         (const u8*)imgBytes.data(), (u32)imgBytes.size());
@@ -438,12 +460,23 @@ void LibraryView::loadDetail() {
         });
         if (!ok) { errMsg = fetchErr; state = State::Error; return; }
 
-        BackgroundImageLoader::Request req;
-        req.itemId      = detailItemId;
-        req.width       = isEp ? 304 : 240;
-        req.height      = isEp ? 171 : 340;
-        req.targetIndex = 0;
-        detailLoader.submitBatch(&req, 1);
+        int dw = isEp ? 304 : 240;
+        int dh = isEp ? 171 : 340;
+        std::string imgBytes;
+        if (client.getCachedItemImageBytes(detailItemId, dw, dh, imgBytes)) {
+            // Cached -- load straight off the SD card, no need for the
+            // background loader / network round trip.
+            DebugLog::Log("Detail image: cached");
+            detailTex = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+        } else {
+            BackgroundImageLoader::Request req;
+            req.itemId      = detailItemId;
+            req.itemName    = detail.name;
+            req.width       = dw;
+            req.height      = dh;
+            req.targetIndex = 0;
+            detailLoader.submitBatch(&req, 1);
+        }
     } else {
         // Fetch metadata and decode thumbnail inside one background pass so the
         // spinner animates throughout (no freeze between network and JPEG decode).
@@ -452,9 +485,9 @@ void LibraryView::loadDetail() {
             if (!ok) { fetchErr = client.lastError(); return; }
             std::string imgBytes;
             if (isEp)
-                client.getItemImageBytes(serverUrl, auth, detailItemId, 304, 171, imgBytes);
+                client.getItemImageBytes(serverUrl, auth, detailItemId, 304, 171, imgBytes, detail.name);
             else
-                client.getItemImageBytes(serverUrl, auth, detailItemId, 240, 340, imgBytes);
+                client.getItemImageBytes(serverUrl, auth, detailItemId, 240, 340, imgBytes, detail.name);
             if (!imgBytes.empty())
                 detailTex = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
         });
@@ -509,19 +542,23 @@ void LibraryView::loadLibraries() {
     });
     if (!ok)             { errMsg = err;                state = State::Error; return; }
     if (libraries.empty()) { errMsg = "No library found"; state = State::Error; return; }
-    loadContinueWatching();
-    loadNextUp();
-    buildActDisplayStrings();
+    // Continue Watching / Next Up (backdrop images included) are deferred to
+    // the first time the Activity tab is actually opened -- see homePage==0's
+    // R-press handler below. Fetching them here blocked the very first thing
+    // the user sees (the Libraries grid) on up to 6 backdrop image fetches
+    // for a tab they might not even visit this session.
     state = State::LibsReady;
 }
 
 void LibraryView::freeCWTextures() {
+    if (asyncPosterLoadingEnabled) activityLoader.cancelAll();
     for (int i = 0; i < 3; i++) {
         if (cwTextures[i]) { GRRLIB_FreeTexture(cwTextures[i]); cwTextures[i] = nullptr; }
     }
 }
 
 void LibraryView::freeNextUpTextures() {
+    if (asyncPosterLoadingEnabled) activityLoader.cancelAll();
     for (int i = 0; i < 3; i++) {
         if (nextUpTextures[i]) { GRRLIB_FreeTexture(nextUpTextures[i]); nextUpTextures[i] = nullptr; }
     }
@@ -535,8 +572,10 @@ void LibraryView::freeNextUpTextures() {
 void LibraryView::releaseForPlayback() {
     if (userIconTex) { GRRLIB_FreeTexture(userIconTex); userIconTex = nullptr; }
     freePosters();
+    posterTexturesStale = true;
     freeCWTextures();
     freeNextUpTextures();
+    activityTexturesStale = true;
     freeMovieSuggestions();
     freeTVSuggestions();
     freeTVUpcoming();
@@ -558,6 +597,7 @@ void LibraryView::releaseForPlayback() {
     if (asyncPosterLoadingEnabled) {
         posterLoader.shutdown();
         detailLoader.shutdown();
+        activityLoader.shutdown();
     }
 }
 
@@ -576,6 +616,7 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
     if (asyncPosterLoadingEnabled) {
         posterLoader.init(&client, &serverUrl, &auth);
         detailLoader.init(&client, &serverUrl, &auth);
+        activityLoader.init(&client, &serverUrl, &auth);
     }
 
     // Reset pending play fields
@@ -596,35 +637,30 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
     pendingPlayAudioIdx = 0;
     pendingPlaySubIdx   = -1;
 
-    // Restore to the deepest safe state — items[] (and sometimes
-    // seasons/episodes) are still populated so skip the network fetch.
-    // Go straight to the Ready state so no loading spinner is shown.
-    // Poster textures were freed by releaseForPlayback(); the render
-    // path draws dark placeholder tiles for null textures, so the grid
-    // is immediately usable — posters will reload on the next page change.
+    // Restore the state captured when video playback was launched. The detail
+    // record was freed for MPlayer's heap budget, so reload that specific page.
     spinAngle = 0.0f;
-    if (!items.empty() && posterMode) {
-        // Poster grid — show immediately with placeholder tiles (no spinner)
-        posterSel = 0;
-        state = State::PostersReady;
+    State returnState = playbackReturnState;
+    bool restoreSavedState = hasPlaybackReturnState;
+    hasPlaybackReturnState = false;
+
+    if (restoreSavedState && returnState == State::DetailReady && !detailItemId.empty()) {
+        // Movie or episode -- both launch playback from this same page, so
+        // this is the only case playbackReturnState is ever actually set to.
+        state = State::DetailLoad;
+    } else if (!items.empty() && posterMode) {
+        // Safe fallback for older/unrecognised launch paths: reload posters
+        // instead of showing a permanently empty grid.
+        loadPosters();
     } else if (!items.empty()) {
-        // Text list — no images needed, show immediately
+        clampScroll();
         state = State::ItemsReady;
-        viewTop = 0;
-        itemSel = 0;
     } else {
-        // No items cached — fall back to library grid
-        state    = State::LibsReady;
-        libSel   = 0;
-        homePage = 0;
-        actRow   = 0;
+        state = State::LibsReady;
     }
 
-    // Activity textures (continue watching / next up) were freed by
-    // releaseForPlayback().  Re-download them now so the Activity tab
-    // has images again.  The metadata vectors are still populated, so
-    // we only need to refetch the backdrop bytes and rebuild textures.
-    reloadActivityTextures();
+    // Activity textures are intentionally reloaded only when the Activity tab
+    // is opened. Avoid six image requests while returning from playback.
 }
 
 void LibraryView::loadContinueWatching() {
@@ -634,12 +670,6 @@ void LibraryView::loadContinueWatching() {
         client.getContinueWatching(serverUrl, auth, continueItems);
         if ((int)continueItems.size() > 3)
             continueItems.resize(3);
-        for (int i = 0; i < (int)continueItems.size(); i++) {
-            std::string imgBytes;
-            client.getItemBackdropBytes(serverUrl, auth, continueItems[i], 190, 107, imgBytes);
-            if (!imgBytes.empty())
-                cwTextures[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
-        }
     });
 }
 
@@ -650,36 +680,61 @@ void LibraryView::loadNextUp() {
         client.getNextUp(serverUrl, auth, nextUpItems);
         if ((int)nextUpItems.size() > 3)
             nextUpItems.resize(3);
-        for (int i = 0; i < (int)nextUpItems.size(); i++) {
-            std::string imgBytes;
-            client.getItemBackdropBytes(serverUrl, auth, nextUpItems[i], 190, 107, imgBytes);
+    });
+}
+
+// Fills whichever Continue Watching / Next Up slots don't already have a
+// texture -- shared by the initial load (every slot empty) and
+// reloadActivityTextures() (only the slots playback freed). Cached
+// backdrops decode straight off the SD card here, synchronously, so they
+// paint on the very next render instead of trickling in one at a time
+// through the async loader -- same pattern as loadPosters()/loadDetail().
+// Only genuine cache misses go into the batch.
+//
+// activityLoader is one loader shared by both rows, and submitBatch()
+// replaces its *entire* pending batch, so CW and Next Up misses must be
+// submitted together in one call or the second call would cancel the first.
+void LibraryView::submitActivityImageBatch() {
+    BackgroundImageLoader::Request reqs[6];
+    int r = 0;
+    for (int i = 0; i < (int)continueItems.size() && i < 3; i++) {
+        if (cwTextures[i]) continue;
+        std::string imgBytes;
+        if (client.getCachedItemBackdropBytes(continueItems[i], 190, 107, imgBytes)) {
+            if (!imgBytes.empty())
+                cwTextures[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            continue;
+        }
+        reqs[r].isBackdrop   = true;
+        reqs[r].backdropItem = continueItems[i];
+        reqs[r].width        = 190;
+        reqs[r].height       = 107;
+        reqs[r].targetIndex  = i;
+        r++;
+    }
+    for (int i = 0; i < (int)nextUpItems.size() && i < 3; i++) {
+        if (nextUpTextures[i]) continue;
+        std::string imgBytes;
+        if (client.getCachedItemBackdropBytes(nextUpItems[i], 190, 107, imgBytes)) {
             if (!imgBytes.empty())
                 nextUpTextures[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            continue;
         }
-    });
+        reqs[r].isBackdrop   = true;
+        reqs[r].backdropItem = nextUpItems[i];
+        reqs[r].width        = 190;
+        reqs[r].height       = 107;
+        reqs[r].targetIndex  = NEXTUP_TARGET_OFFSET + i;
+        r++;
+    }
+    activityLoader.submitBatch(reqs, r);
 }
 
 void LibraryView::reloadActivityTextures() {
     // Re-fetch backdrop images for continue-watching and next-up items whose
     // metadata is still cached but whose textures were freed for playback.
-    runWithLoading([&]() {
-        for (int i = 0; i < (int)continueItems.size() && i < 3; i++) {
-            if (!cwTextures[i]) {
-                std::string imgBytes;
-                client.getItemBackdropBytes(serverUrl, auth, continueItems[i], 190, 107, imgBytes);
-                if (!imgBytes.empty())
-                    cwTextures[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
-            }
-        }
-        for (int i = 0; i < (int)nextUpItems.size() && i < 3; i++) {
-            if (!nextUpTextures[i]) {
-                std::string imgBytes;
-                client.getItemBackdropBytes(serverUrl, auth, nextUpItems[i], 190, 107, imgBytes);
-                if (!imgBytes.empty())
-                    nextUpTextures[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
-            }
-        }
-    });
+    submitActivityImageBatch();
+    activityTexturesStale = false;
 }
 
 // Pre-compute truncated display strings for activity cards so the render loop
@@ -756,6 +811,20 @@ void LibraryView::loadMovieFavorites() {
     else     { globFavMode = false; itemSel = 0; viewTop = 0; posterSel = 0; state = State::PostersLoad; }
 }
 
+void LibraryView::loadTVFavorites() {
+    items.clear();
+    int limit      = POSTERS_PER_PAGE;
+    int startIndex = itemPage * limit;
+    bool ok = false; std::string err;
+    runWithLoading([&]() {
+        ok = client.getFavoriteSeries(serverUrl, auth, tvLibId,
+                                      startIndex, limit, items, itemTotal);
+        if (!ok) err = client.lastError();
+    });
+    if (!ok) { errMsg = err.empty() ? "Favorites unavailable" : err; state = State::Error; }
+    else     { globFavMode = false; itemSel = 0; viewTop = 0; posterSel = 0; state = State::PostersLoad; }
+}
+
 void LibraryView::loadGlobalFavorites() {
     items.clear();
     int limit      = POSTERS_PER_PAGE;
@@ -788,7 +857,7 @@ void LibraryView::loadMovieSuggestions() {
         for (int i = 0; i < (int)movieContItems.size(); i++) {
             std::string imgBytes;
             client.getItemImageBytes(serverUrl, auth, movieContItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes);
+                                     POSTER_W, POSTER_H, imgBytes, movieContItems[i].name);
             if (!imgBytes.empty())
                 movieContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
                                                     (u32)imgBytes.size());
@@ -797,7 +866,7 @@ void LibraryView::loadMovieSuggestions() {
         for (int i = 0; i < (int)movieRecentItems.size(); i++) {
             std::string imgBytes;
             client.getItemImageBytes(serverUrl, auth, movieRecentItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes);
+                                     POSTER_W, POSTER_H, imgBytes, movieRecentItems[i].name);
             if (!imgBytes.empty())
                 movieRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
                                                       (u32)imgBytes.size());
@@ -868,7 +937,7 @@ void LibraryView::loadTVSuggestions() {
         for (int i = 0; i < (int)tvRecentItems.size(); i++) {
             std::string imgBytes;
             client.getItemImageBytes(serverUrl, auth, tvRecentItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes);
+                                     POSTER_W, POSTER_H, imgBytes, tvRecentItems[i].name);
             if (!imgBytes.empty())
                 tvRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
                                                   (u32)imgBytes.size());
@@ -921,7 +990,7 @@ void LibraryView::loadMusicSuggestions() {
         for (int i = 0; i < (int)musicRecentItems.size(); i++) {
             std::string imgBytes;
             client.getItemImageBytes(serverUrl, auth, musicRecentItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes);
+                                     POSTER_W, POSTER_H, imgBytes, musicRecentItems[i].name);
             if (!imgBytes.empty())
                 musicRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
                                                      (u32)imgBytes.size());
@@ -1021,8 +1090,25 @@ bool LibraryView::update(ir_t& ir) {
 
             if (homePage == 0) {
                 // ---- Libraries page ----
+                // The only other way out of this screen was IR-clicking the
+                // user icon (top-right corner) -- impossible on a GameCube
+                // pad, which has no pointer. B now does the same thing.
+                if (Input::isBackPressed()) { SoundFX::play(SoundFX::FX::Back); return true; }
                 if (Input::isLPressed()) { itemPage = 0; state = State::GlobalFavoritesLoad; irMode = false; return false; } // [-] prev: wrap to Favourites
-                if (Input::isRPressed()) { homePage = 1; irMode = false; return false; }                                    // [+] next: Activity
+                if (Input::isRPressed()) {
+                    homePage = 1;
+                    irMode = false;
+                    if (!activityLoaded) {
+                        loadContinueWatching();
+                        loadNextUp();
+                        buildActDisplayStrings();
+                        submitActivityImageBatch();
+                        activityLoaded = true;
+                    } else if (activityTexturesStale) {
+                        reloadActivityTextures();
+                    }
+                    return false;
+                } // [+] next: Activity
 
                 // [1] button (mapped to WPAD_BUTTON_1) → open search
                 if (WPAD_ButtonsDown(0) & WPAD_BUTTON_1) {
@@ -1093,6 +1179,23 @@ bool LibraryView::update(ir_t& ir) {
                 }
             } else {
                 // ---- Activity page ----
+                if (asyncPosterLoadingEnabled) {
+                    for (int i = 0; i < 3 && i < (int)continueItems.size(); i++) {
+                        if (activityLoader.isDone(i)) {
+                            GRRLIB_texImg* t = activityLoader.takeResult(i);
+                            if (cwTextures[i]) GRRLIB_FreeTexture(cwTextures[i]);
+                            cwTextures[i] = t;
+                        }
+                    }
+                    for (int i = 0; i < 3 && i < (int)nextUpItems.size(); i++) {
+                        int tgt = NEXTUP_TARGET_OFFSET + i;
+                        if (activityLoader.isDone(tgt)) {
+                            GRRLIB_texImg* t = activityLoader.takeResult(tgt);
+                            if (nextUpTextures[i]) GRRLIB_FreeTexture(nextUpTextures[i]);
+                            nextUpTextures[i] = t;
+                        }
+                    }
+                }
                 if (Input::isBackPressed()) { homePage = 0; irMode = false; return false; }
                 if (Input::isLPressed()) { homePage = 0; irMode = false; return false; }                                       // [-] prev: Libraries
                 if (Input::isRPressed()) { itemPage = 0; state = State::GlobalFavoritesLoad; irMode = false; return false; }   // [+] next: Favourites
@@ -1341,6 +1444,20 @@ bool LibraryView::update(ir_t& ir) {
                 }
             }
             int n = (int)items.size();
+            // Which *Load state re-fetches the *current page's* content --
+            // pagination must return here, not just State::ItemsInit
+            // (the unfiltered "all items" loader), or turning the page while
+            // viewing Favorites/Collections silently drops the filter and
+            // shows the whole library instead.
+            auto pageChangeState = [&]() -> State {
+                if (globFavMode) return State::GlobalFavoritesLoad;
+                if (currentLibType == "movies" && !inBoxSetDrilldown) {
+                    if (movieTab == 1) return State::CollectionsLoad;
+                    if (movieTab == 2) return State::FavoritesLoad;
+                }
+                if (currentLibType == "tvshows" && tvTab == 1) return State::TVFavoritesLoad;
+                return State::ItemsInit;
+            };
             if (Input::isBackPressed()) {
                 freePosters();
                 if (inBoxSetDrilldown) {
@@ -1394,19 +1511,21 @@ bool LibraryView::update(ir_t& ir) {
             if (currentLibType == "tvshows") {
                 if (Input::isLPressed()) {
                     freePosters();
-                    tvTab = (tvTab + 2) % 3;
+                    tvTab = (tvTab + 3) % 4;
                     itemPage = 0;
                     if      (tvTab == 0) { currentLibId = tvLibId; state = State::ItemsInit; }
-                    else if (tvTab == 1) state = State::TVSuggestionsLoad;
+                    else if (tvTab == 1) state = State::TVFavoritesLoad;
+                    else if (tvTab == 2) state = State::TVSuggestionsLoad;
                     else                 state = State::TVUpcomingLoad;
                     return false;
                 }
                 if (Input::isRPressed()) {
                     freePosters();
-                    tvTab = (tvTab + 1) % 3;
+                    tvTab = (tvTab + 1) % 4;
                     itemPage = 0;
                     if      (tvTab == 0) { currentLibId = tvLibId; state = State::ItemsInit; }
-                    else if (tvTab == 1) state = State::TVSuggestionsLoad;
+                    else if (tvTab == 1) state = State::TVFavoritesLoad;
+                    else if (tvTab == 2) state = State::TVSuggestionsLoad;
                     else                 state = State::TVUpcomingLoad;
                     return false;
                 }
@@ -1419,7 +1538,7 @@ bool LibraryView::update(ir_t& ir) {
                 if (posterSel >= POSTER_COLS) {
                     posterSel -= POSTER_COLS;
                 } else if (itemPage > 0) {
-                    freePosters(); itemPage--; state = State::ItemsInit;
+                    freePosters(); itemPage--; state = pageChangeState();
                 }
                 irMode = false;
             }
@@ -1429,7 +1548,7 @@ bool LibraryView::update(ir_t& ir) {
                     posterSel += POSTER_COLS;
                 } else {
                     int totalPages = (itemTotal + POSTERS_PER_PAGE - 1) / POSTERS_PER_PAGE;
-                    if (itemPage + 1 < totalPages) { freePosters(); itemPage++; state = State::ItemsInit; }
+                    if (itemPage + 1 < totalPages) { freePosters(); itemPage++; state = pageChangeState(); }
                 }
                 irMode = false;
             }
@@ -1437,14 +1556,14 @@ bool LibraryView::update(ir_t& ir) {
             if (Input::isLPressed() && itemPage > 0) {
                 freePosters();
                 itemPage--;
-                state = State::ItemsInit;
+                state = pageChangeState();
             }
             if (Input::isRPressed()) {
                 int totalPages = (itemTotal + POSTERS_PER_PAGE - 1) / POSTERS_PER_PAGE;
                 if (itemPage + 1 < totalPages) {
                     freePosters();
                     itemPage++;
-                    state = State::ItemsInit;
+                    state = pageChangeState();
                 }
             }
             // Arrow button IR click
@@ -1455,12 +1574,12 @@ bool LibraryView::update(ir_t& ir) {
                 if (ax >= ARROW_CX - ARROW_HIT_R && ax < ARROW_CX + ARROW_HIT_R) {
                     if (ay >= ARROW_UP_CY - ARROW_HIT_R && ay < ARROW_UP_CY + ARROW_HIT_R
                             && itemPage > 0) {
-                        freePosters(); itemPage--; state = State::ItemsInit;
+                        freePosters(); itemPage--; state = pageChangeState();
                         arrowClicked = true;
                     }
                     if (ay >= ARROW_DN_CY - ARROW_HIT_R && ay < ARROW_DN_CY + ARROW_HIT_R
                             && itemPage + 1 < totalPages) {
-                        freePosters(); itemPage++; state = State::ItemsInit;
+                        freePosters(); itemPage++; state = pageChangeState();
                         arrowClicked = true;
                     }
                 }
@@ -1515,7 +1634,15 @@ bool LibraryView::update(ir_t& ir) {
         case State::SeasonsReady: {
             int n = (int)seasons.size();
             if (Input::isBackPressed()) {
-                state = seasonsCallerState;
+                // Video playback frees poster textures to make room for
+                // MPlayer. Start their background reload only when the user
+                // actually returns to the series grid.
+                if (seasonsCallerState == State::PostersReady &&
+                    posterTexturesStale && !items.empty()) {
+                    loadPosters();
+                } else {
+                    state = seasonsCallerState;
+                }
                 return false;
             }
             if (Input::isUpPressed())   { if (seasonSel > 0)   { seasonSel--; clampSeasonScroll(); } irMode = false; }
@@ -1591,6 +1718,10 @@ bool LibraryView::update(ir_t& ir) {
 
         case State::FavoritesLoad:
             loadMovieFavorites();
+            return false;
+
+        case State::TVFavoritesLoad:
+            loadTVFavorites();
             return false;
 
         case State::MovieSuggestionsLoad:
@@ -1698,19 +1829,22 @@ bool LibraryView::update(ir_t& ir) {
             // Tab switch with -/+
             if (Input::isLPressed()) {
                 freeTVSuggestions();
-                tvTab = (tvTab + 2) % 3;
+                tvTab = (tvTab + 3) % 4;
                 itemPage = 0;
                 if      (tvTab == 0) { currentLibId = tvLibId; state = State::ItemsInit; }
-                else                  state = State::TVUpcomingLoad;
+                else if (tvTab == 1) state = State::TVFavoritesLoad;
+                else if (tvTab == 2) state = State::TVSuggestionsLoad;
+                else                 state = State::TVUpcomingLoad;
                 return false;
             }
             if (Input::isRPressed()) {
                 freeTVSuggestions();
-                tvTab = (tvTab + 1) % 3;
+                tvTab = (tvTab + 1) % 4;
                 itemPage = 0;
                 if      (tvTab == 0) { currentLibId = tvLibId; state = State::ItemsInit; }
-                else if (tvTab == 1) state = State::TVSuggestionsLoad;
-                else                  state = State::TVUpcomingLoad;
+                else if (tvTab == 1) state = State::TVFavoritesLoad;
+                else if (tvTab == 2) state = State::TVSuggestionsLoad;
+                else                 state = State::TVUpcomingLoad;
                 return false;
             }
             {
@@ -1787,21 +1921,23 @@ bool LibraryView::update(ir_t& ir) {
             // Tab switch with -/+
             if (Input::isLPressed()) {
                 freeTVUpcoming();
-                tvTab = (tvTab + 2) % 3;
+                tvTab = (tvTab + 3) % 4;
                 itemPage = 0;
                 if      (tvTab == 0) { currentLibId = tvLibId; state = State::ItemsInit; }
-                else if (tvTab == 1) state = State::TVSuggestionsLoad;
-                else                  state = State::TVUpcomingLoad;
+                else if (tvTab == 1) state = State::TVFavoritesLoad;
+                else if (tvTab == 2) state = State::TVSuggestionsLoad;
+                else                 state = State::TVUpcomingLoad;
                 return false;
             }
             if (Input::isRPressed()) {
                 freeTVUpcoming();
-                tvTab = (tvTab + 1) % 3;
+                tvTab = (tvTab + 1) % 4;
                 itemPage = 0;
                 if      (tvTab == 0) { currentLibId = tvLibId; state = State::ItemsInit; }
-                else if (tvTab == 1) state = State::TVSuggestionsLoad;
-                // tvTab == 2 → reload upcoming
-                else                  state = State::TVUpcomingLoad;
+                else if (tvTab == 1) state = State::TVFavoritesLoad;
+                else if (tvTab == 2) state = State::TVSuggestionsLoad;
+                // tvTab == 3 → reload upcoming
+                else                 state = State::TVUpcomingLoad;
                 return false;
             }
             {
@@ -2039,6 +2175,13 @@ bool LibraryView::update(ir_t& ir) {
                     pendingPlayEpisodeIdx = 0;
                     pendingPlaySeriesId.clear();
                 }
+                // Playback is always launched from this same DetailReady page
+                // (movie or episode) -- restore straight back into it rather
+                // than detailReturnState (the list *behind* the detail page),
+                // which is preserved separately and still governs B from
+                // the reloaded detail page itself.
+                playbackReturnState = State::DetailReady;
+                hasPlaybackReturnState = true;
                 return true;
             }
             if (Input::isBackPressed()) {
@@ -2161,6 +2304,13 @@ bool LibraryView::update(ir_t& ir) {
                     pendingPlayEpisodeIdx = 0;
                     pendingPlaySeriesId.clear();
                 }
+                // Playback is always launched from this same DetailReady page
+                // (movie or episode) -- restore straight back into it rather
+                // than detailReturnState (the list *behind* the detail page),
+                // which is preserved separately and still governs B from
+                // the reloaded detail page itself.
+                playbackReturnState = State::DetailReady;
+                hasPlaybackReturnState = true;
                 return true;
             }
             return false;
@@ -2212,6 +2362,15 @@ bool LibraryView::update(ir_t& ir) {
             // [-] prev tab = Activity, [+] next tab = Libraries (wrap)
             if (Input::isLPressed()) {
                 freePosters(); globFavMode = false; homePage = 1; state = State::LibsReady;
+                if (!activityLoaded) {
+                    loadContinueWatching();
+                    loadNextUp();
+                    buildActDisplayStrings();
+                    submitActivityImageBatch();
+                    activityLoaded = true;
+                } else if (activityTexturesStale) {
+                    reloadActivityTextures();
+                }
                 return false;
             }
             if (Input::isRPressed()) {
@@ -2409,6 +2568,7 @@ void LibraryView::render(ir_t& ir) {
         state == State::SeasonsLoad || state == State::EpisodesLoad ||
         state == State::MusicTracksLoad ||
         state == State::CollectionsLoad || state == State::FavoritesLoad ||
+        state == State::TVFavoritesLoad ||
         state == State::MovieSuggestionsLoad ||
         state == State::TVSuggestionsLoad || state == State::TVUpcomingLoad ||
         state == State::MusicSuggestionsLoad || state == State::PlaylistsLoad ||
@@ -2881,13 +3041,13 @@ void LibraryView::render(ir_t& ir) {
                 tabX += tw + TAB_GAP;
             }
         } else if (currentLibType == "tvshows") {
-            const char* tabNames[3] = { "Series", "Suggestions", "Coming Up" };
+            const char* tabNames[4] = { "Series", "Favorites", "Suggestions", "Coming Up" };
             const int TAB_GAP = 20;
             int totalW = 0;
-            for (int t = 0; t < 3; t++)
-                totalW += (int)GRRLIB_WidthTTF(font, tabNames[t], 14) + (t < 2 ? TAB_GAP : 0);
+            for (int t = 0; t < 4; t++)
+                totalW += (int)GRRLIB_WidthTTF(font, tabNames[t], 14) + (t < 3 ? TAB_GAP : 0);
             int tabX = (640 - totalW) / 2;
-            for (int t = 0; t < 3; t++) {
+            for (int t = 0; t < 4; t++) {
                 int tw = (int)GRRLIB_WidthTTF(font, tabNames[t], 14);
                 u32 col = (t == tvTab) ? 0xFFFFFFFF : 0x5B7A9AFF;
                 GRRLIB_PrintfTTF(tabX, 18, font, tabNames[t], 14, col);
@@ -3295,13 +3455,13 @@ void LibraryView::render(ir_t& ir) {
         snprintf(hdr, sizeof(hdr), "< %s", currentLibName.c_str());
         GRRLIB_PrintfTTF(20, 14, font, hdr, 20, 0xFFFFFFFF);
 
-        const char* tabNames[3] = { "Series", "Suggestions", "Coming Up" };
+        const char* tabNames[4] = { "Series", "Favorites", "Suggestions", "Coming Up" };
         const int TAB_GAP = 20;
         int totalW = 0;
-        for (int t = 0; t < 3; t++)
-            totalW += (int)GRRLIB_WidthTTF(font, tabNames[t], 14) + (t < 2 ? TAB_GAP : 0);
+        for (int t = 0; t < 4; t++)
+            totalW += (int)GRRLIB_WidthTTF(font, tabNames[t], 14) + (t < 3 ? TAB_GAP : 0);
         int tabX = (640 - totalW) / 2;
-        for (int t = 0; t < 3; t++) {
+        for (int t = 0; t < 4; t++) {
             int tw = (int)GRRLIB_WidthTTF(font, tabNames[t], 14);
             u32 col = (t == tvTab) ? 0xFFFFFFFF : 0x5B7A9AFF;
             GRRLIB_PrintfTTF(tabX, 18, font, tabNames[t], 14, col);
@@ -3422,13 +3582,13 @@ void LibraryView::render(ir_t& ir) {
         snprintf(hdr, sizeof(hdr), "< %s", currentLibName.c_str());
         GRRLIB_PrintfTTF(20, 14, font, hdr, 20, 0xFFFFFFFF);
 
-        const char* tabNames[3] = { "Series", "Suggestions", "Coming Up" };
+        const char* tabNames[4] = { "Series", "Favorites", "Suggestions", "Coming Up" };
         const int TAB_GAP = 20;
         int totalW = 0;
-        for (int t = 0; t < 3; t++)
-            totalW += (int)GRRLIB_WidthTTF(font, tabNames[t], 14) + (t < 2 ? TAB_GAP : 0);
+        for (int t = 0; t < 4; t++)
+            totalW += (int)GRRLIB_WidthTTF(font, tabNames[t], 14) + (t < 3 ? TAB_GAP : 0);
         int tabX = (640 - totalW) / 2;
-        for (int t = 0; t < 3; t++) {
+        for (int t = 0; t < 4; t++) {
             int tw = (int)GRRLIB_WidthTTF(font, tabNames[t], 14);
             u32 col = (t == tvTab) ? 0xFFFFFFFF : 0x5B7A9AFF;
             GRRLIB_PrintfTTF(tabX, 18, font, tabNames[t], 14, col);

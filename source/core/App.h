@@ -31,4 +31,5 @@ private:
     JellyfinClient jellyfinClient;
     bool musicEnabled = true;
     bool bgImageLoadingEnabled = true; // dev default: on. See wiifin.cfg "bg_image_loading".
+    bool debugLogFileEnabled = false;  // opt-in: writes DebugLog to sd:/apps/WiiFin/wiifin_log.txt
 };

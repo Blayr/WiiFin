@@ -29,6 +29,8 @@
 #include <ogc/gx.h>        /* GX_SetDrawDoneCallback */
 #include <ogc/lwp.h>       /* LWP_CreateThread / LWP_JoinThread */
 #include <wiiuse/wpad.h>   /* WPAD_ScanPads, WPAD_ButtonsDown, … */
+#include <ogc/pad.h>       /* PAD_ScanPads — GameCube controller support */
+#include "../input/Input.h" /* Input::gcButtonsAsWpad — shared GC-to-WPAD button translation */
 #include <unistd.h>        /* usleep */
 #include <network.h>       /* net_close — socket cleanup after MPlayer longjmp */
 
@@ -76,10 +78,12 @@ extern "C" {
     volatile float g_mplayer_time_pos  = 0.0f;
     volatile float g_mplayer_duration  = 0.0f;
     volatile int   g_mplayer_paused    = 0;
+    volatile float g_wiifin_session_start_secs = 0.0f;
 
     /* Control requests: written by background thread, consumed by mplayer.c */
     volatile float g_wiifin_seek_secs  = -1.0f;
     volatile int   g_wiifin_vol_delta  = 0;
+    volatile float g_wiifin_scrub_target_secs = -1.0f;
 
     /* Texture overlay callback: defined here, called from gx_supp.c flip_page */
     void (*g_wiifin_overlay_cb)(uint8_t*, int, int) = nullptr;
@@ -218,6 +222,12 @@ static void* bgThreadFunc(void*)
     WPADData* wd0 = WPAD_Data(WPAD_CHAN_0);
     u32 prevHeld = wd0 ? wd0->btns_h : 0;
     int prevPaused = g_mplayer_paused;
+    /* Tracked separately from prevHeld so we can tell whether a given
+     * button-down edge came from the GameCube pad specifically (see
+     * gcDown below) -- vo_gx.c's own pause/seek handling never sees GC
+     * pad state, so GC-sourced presses are always safe for PlayerOverlay
+     * to act on directly even in video mode. */
+    u32 prevGcHeld = 0;
     while (!s_bg_stop) {
         /* If the user pressed the Wii power button or reset button,
          * stop MPlayer so wii_player_play() returns cleanly and App.cpp
@@ -233,8 +243,12 @@ static void* bgThreadFunc(void*)
          * so nobody else scans) */
         if (audioMode || g_wiifin_xfb_spinner_active || g_wiifin_grrlib_render_cb)
             WPAD_ScanPads();
+        /* Unlike WPAD, nothing else in the video-playback path scans the
+         * GameCube pad -- always refresh it here regardless of mode. */
+        PAD_ScanPads();
         WPADData* wd = WPAD_Data(WPAD_CHAN_0);
-        u32 held = wd ? wd->btns_h : 0;
+        u32 gcHeld = Input::gcButtonsAsWpad(/*held=*/true);
+        u32 held = (wd ? wd->btns_h : 0) | gcHeld;
 
         /* In video mode, ov_tick() owns WPAD_ScanPads() from the MPlayer
          * main thread (called at top of every ov_tick).  When the player
@@ -252,6 +266,12 @@ static void* bgThreadFunc(void*)
 
         u32 down = held & ~prevHeld;
         prevHeld = held;
+
+        /* GC-only down-edge, tracked independently of prevHeld/down above --
+         * needed so PlayerOverlay can tell which specific bits in `down`
+         * originated from the GC pad vs a real Wiimote press. */
+        u32 gcDown = gcHeld & ~prevGcHeld;
+        prevGcHeld = gcHeld;
 
         /* Read IR pointer — WPAD_IR() computes screen coords from raw sensor
          * data already stored in wd; safe to call from a second thread. */
@@ -290,8 +310,9 @@ static void* bgThreadFunc(void*)
         }
 
         if (s_overlay)
-            s_overlay->tick(g_mplayer_time_pos, g_mplayer_paused, down, held,
-                            irX, irY, (bool)ir.valid);
+            s_overlay->tick(g_wiifin_session_start_secs + g_mplayer_time_pos,
+                            g_mplayer_paused, down, held,
+                            irX, irY, (bool)ir.valid, gcDown);
 
         if (s_music_tick_cb)
             s_music_tick_cb(g_mplayer_paused, down, held);
@@ -706,6 +727,13 @@ void wii_player_request_sub_switch(void)
 {
     g_player_stop_reason = PLAYER_STOP_SUB;
     async_quit_request   = 1;
+}
+
+void wii_player_request_seek(float targetSeconds)
+{
+    g_wiifin_scrub_target_secs = targetSeconds;
+    g_player_stop_reason       = PLAYER_STOP_SCRUB;
+    async_quit_request         = 1;
 }
 
 /* -----------------------------------------------------------------------

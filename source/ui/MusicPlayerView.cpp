@@ -790,7 +790,7 @@ bool MusicPlayerView::run()
                 MusicOverlay::renderArtTex = nullptr;
             }
             std::string imgBytes;
-            if (client.getItemImageBytes(serverUrl, auth, tr.id, 210, 210, imgBytes)
+            if (client.getItemImageBytes(serverUrl, auth, tr.id, 210, 210, imgBytes, tr.title)
                     && !imgBytes.empty()) {
                 MusicOverlay::renderArtTex = loadJPEGTexture(
                     (const u8*)imgBytes.data(), (u32)imgBytes.size());

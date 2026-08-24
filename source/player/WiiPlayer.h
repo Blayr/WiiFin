@@ -61,6 +61,15 @@ void wii_player_set_cursor_tex(void* data, u16 w, u16 h, u8 fmt);
 #define PLAYER_STOP_WIIMENU 6   /* User chose "Wii Menu" from HOME overlay   */
 #define PLAYER_STOP_RESET   7   /* User chose "Reset" from HOME overlay      */
 #define PLAYER_STOP_HOME    8   /* HOME pressed: exit to GRRLIB overlay, may resume */
+#define PLAYER_STOP_SCRUB   9   /* Overlay requested: progress-bar scrub committed --
+                                  * restart the transcode at a new position, same as
+                                  * an audio/sub track switch.  A plain in-stream
+                                  * wii_player_seek_abs() only works reliably within
+                                  * whatever the demuxer has already buffered; jumping
+                                  * far ahead of that (the whole point of the scrub
+                                  * bar) lands at the wrong position, so scrub commits
+                                  * get a fresh transcoding URL at the target time
+                                  * instead, mirroring PLAYER_STOP_AUDIO/SUB. */
 
 /* Set before wii_player_play(); read back after it returns to know the reason. */
 extern volatile int g_player_stop_reason;
@@ -96,12 +105,25 @@ extern volatile float g_mplayer_time_pos;  /* current video PTS (seconds)    */
 extern volatile float g_mplayer_duration;  /* total stream duration (seconds) */
 extern volatile int   g_mplayer_paused;    /* 1 while MPlayer is paused        */
 
+/* Absolute video position (seconds) at which the CURRENT transcode session
+ * starts -- g_mplayer_time_pos resets to 0 at the start of every session
+ * (resume, track switch, scrub restart), so it's session-relative, not the
+ * true position in the video. Set by App.cpp right before wii_player_play();
+ * bgThreadFunc adds it to g_mplayer_time_pos before handing the position to
+ * the overlay so on-screen time/scrub-bar reflect the real absolute spot. */
+extern volatile float g_wiifin_session_start_secs;
+
 /* ------------------------------------------------------------------
  * MPlayer control requests — written by background thread,
  * consumed once per main-loop iteration by the patched mplayer.c.
  * ------------------------------------------------------------------ */
 extern volatile float g_wiifin_seek_secs;  /* set >=0 to seek absolute       */
 extern volatile int   g_wiifin_vol_delta;  /* set non-zero to adjust volume   */
+
+/* Target position (seconds) for a PLAYER_STOP_SCRUB restart -- set by
+ * wii_player_request_seek() before it stops the current session; read
+ * back by App.cpp once wii_player_play() returns with that reason. */
+extern volatile float g_wiifin_scrub_target_secs;
 
 /* ------------------------------------------------------------------
  * Texture overlay callback — set before wii_player_play().
@@ -137,6 +159,11 @@ void wii_player_request_next(void);
 void wii_player_request_prev(void);
 void wii_player_request_audio_switch(void);
 void wii_player_request_sub_switch(void);
+
+/* Stops the current session with PLAYER_STOP_SCRUB and targetSeconds stashed
+ * in g_wiifin_scrub_target_secs -- App.cpp requests a fresh transcoding URL
+ * at that position and restarts, instead of relying on an in-stream seek. */
+void wii_player_request_seek(float targetSeconds);
 
 /* ------------------------------------------------------------------
  * Track selector data — set before wii_player_play() so the GX overlay

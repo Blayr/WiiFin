@@ -1,4 +1,5 @@
 #include "JellyfinClient.h"
+#include "../core/DebugLog.h"
 #include <network.h>
 #include <ogc/if_config.h>
 #include <ogc/lwp_watchdog.h>
@@ -482,8 +483,15 @@ int JellyfinClient::httpRequest(const std::string& url,
     if (!parseUrl(url, host, port, basePath, isHttps)) return -1;
 
     if (isHttps) {
-        return httpsRequest(host, port, basePath, method, contentType, body, authToken, responseBody);
+        u64 t0 = gettime();
+        int status = httpsRequest(host, port, basePath, method, contentType, body, authToken, responseBody);
+        u32 ms = (u32)ticks_to_millisecs(gettime() - t0);
+        if (status > 0) DebugLog::Log("<- %d (%u B, %u ms)", status, (unsigned)responseBody.size(), ms);
+        else            DebugLog::Log("x %s (%u ms)", errMsg.c_str(), ms);
+        return status;
     }
+
+    u64 plainT0 = gettime();
 
     // Resolve host — try as a numeric IPv4 literal first; fall back to DNS.
     struct sockaddr_in addr;
@@ -613,9 +621,11 @@ int JellyfinClient::httpRequest(const std::string& url,
         if (sp) status = atoi(sp + 1);
     }
     SYS_Report("[http] status=%d rawLen=%d\n", status, rawLen);
+    u32 plainMs = (u32)ticks_to_millisecs(gettime() - plainT0);
     if (status == 0) {
         errMsg = rawLen == 0 ? "No response from server (check server URL / port)"
                              : "Invalid HTTP response (server may require HTTPS)";
+        DebugLog::Log("x %s (%u ms)", errMsg.c_str(), plainMs);
         return -1;
     }
     const char* sep = strstr(rawBuf, "\r\n\r\n");
@@ -628,6 +638,7 @@ int JellyfinClient::httpRequest(const std::string& url,
     } else {
         responseBody = "";
     }
+    DebugLog::Log("<- %d (%u B, %u ms)", status, (unsigned)responseBody.size(), plainMs);
     return status;
 }
 
@@ -910,6 +921,7 @@ bool JellyfinClient::authenticate(const std::string& serverUrl,
     std::string body = "{\"Username\":\"" + jsonEscapeString(username) + "\",\"Pw\":\"" + jsonEscapeString(password) + "\"}";
     std::string url  = serverUrl + "/Users/AuthenticateByName";
     std::string resp;
+    DebugLog::Log("Logging in...");
     int status = httpRequest(url, "POST", "application/json", body, "", resp);
     if (status != 200) {
         if (status >= 0)
@@ -927,6 +939,7 @@ bool JellyfinClient::authenticate(const std::string& serverUrl,
 bool JellyfinClient::quickConnectInitiate(const std::string& serverUrl, QuickConnectResult& out) {
     std::string url = serverUrl + "/QuickConnect/Initiate";
     std::string resp;
+    DebugLog::Log("Starting Quick Connect...");
     int status = httpRequest(url, "POST", "application/json", "{}", "", resp);
     if (status != 200) {
         if (status >= 0)
@@ -945,6 +958,7 @@ bool JellyfinClient::quickConnectCheck(const std::string& serverUrl,
                                         QuickConnectResult& out) {
     std::string url = serverUrl + "/QuickConnect/Connect?Secret=" + secret;
     std::string resp;
+    DebugLog::Log("Checking Quick Connect...");
     int status = httpRequest(url, "GET", "", "", "", resp);
     if (status != 200) return false;
     out.authenticated = jsonGetBool(resp, "Authenticated");
@@ -958,6 +972,7 @@ bool JellyfinClient::quickConnectAuthenticate(const std::string& serverUrl,
     std::string body = "{\"Secret\":\"" + jsonEscapeString(secret) + "\"}";
     std::string url  = serverUrl + "/Users/AuthenticateWithQuickConnect";
     std::string resp;
+    DebugLog::Log("Finishing Quick Connect...");
     int status = httpRequest(url, "POST", "application/json", body, "", resp);
     if (status != 200) {
         if (status >= 0)
@@ -975,6 +990,7 @@ bool JellyfinClient::getServerName(const std::string& serverUrl,
                                     const JellyfinAuth& auth,
                                     std::string& outName) {
     std::string resp;
+    DebugLog::Log("Checking server...");
     int status = httpRequest(serverUrl + "/System/Info",
                              "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
@@ -990,6 +1006,7 @@ bool JellyfinClient::getLibraries(const std::string& serverUrl,
                                    std::vector<JellyfinLibrary>& out) {
     std::string url  = serverUrl + "/Users/" + auth.userId + "/Views";
     std::string resp;
+    DebugLog::Log("Loading libraries...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getLibraries failed (HTTP " + std::to_string(status) + ")";
@@ -1030,6 +1047,7 @@ bool JellyfinClient::getItems(const std::string& serverUrl,
         auth.userId.c_str(), parentId.c_str(), limit, startIndex);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading items...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getItems failed (HTTP " + std::to_string(status) + ")";
@@ -1077,6 +1095,7 @@ bool JellyfinClient::getAlbumsByArtist(const std::string& serverUrl,
         auth.userId.c_str(), artistId.c_str(), limit, startIndex);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading albums...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getAlbumsByArtist failed (HTTP " + std::to_string(status) + ")";
@@ -1108,34 +1127,59 @@ bool JellyfinClient::getAlbumsByArtist(const std::string& serverUrl,
 // Misses fetch normally and best-effort save the response for next time.
 // Caching is disabled (plain passthrough to httpRequest) when cacheDir is empty.
 // ---------------------------------------------------------------------------
-bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
-                                      const std::string& url,
-                                      const std::string& authToken,
-                                      std::string& outBytes) {
-    if (cacheDir.empty()) {
-        int status = httpRequest(url, "GET", "", "", authToken, outBytes);
-        return status == 200;
-    }
+bool JellyfinClient::tryReadCachedImage(const std::string& cacheKey, std::string& outBytes) {
+    if (cacheDir.empty()) return false;
 
     std::string path = cacheDir + cacheKey;
 
     struct stat st;
-    if (stat(path.c_str(), &st) == 0) {
-        FILE* f = fopen(path.c_str(), "rb");
-        if (f) {
-            outBytes.clear();
-            outBytes.resize((size_t)st.st_size);
-            size_t nread = fread(&outBytes[0], 1, (size_t)st.st_size, f);
-            fclose(f);
-            if (nread > 0 && nread == (size_t)st.st_size) {
-                SYS_Report("[imgcache] HIT key=%s path=%s\n", cacheKey.c_str(), path.c_str());
-                return true;
-            }
-            outBytes.clear();
-        }
+    if (stat(path.c_str(), &st) != 0) return false;
+
+    if (st.st_size == 0) {
+        // Negative-cache marker (see fetchImageCached) -- a prior fetch got
+        // a definitive 404 for this exact image (e.g. no Thumb configured
+        // for an episode). Treat as a hit with no data so callers move on
+        // to their next fallback without repeating a network round trip
+        // that would just 404 again.
+        outBytes.clear();
+        SYS_Report("[imgcache] HIT (negative) key=%s\n", cacheKey.c_str());
+        return true;
     }
 
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::string bytes;
+    bytes.resize((size_t)st.st_size);
+    size_t nread = fread(&bytes[0], 1, (size_t)st.st_size, f);
+    fclose(f);
+    if (nread != (size_t)st.st_size) return false;
+
+    outBytes = std::move(bytes);
+    SYS_Report("[imgcache] HIT key=%s path=%s\n", cacheKey.c_str(), path.c_str());
+    return true;
+}
+
+bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
+                                      const std::string& url,
+                                      const std::string& authToken,
+                                      std::string& outBytes,
+                                      const std::string& label) {
+    if (cacheDir.empty()) {
+        // No SD/USB device mounted -- caching is off entirely, every image
+        // is a network fetch.
+        DebugLog::Log("%s (no cache)", label.c_str());
+        int status = httpRequest(url, "GET", "", "", authToken, outBytes);
+        return status == 200;
+    }
+
+    if (tryReadCachedImage(cacheKey, outBytes)) return true;
+
+    std::string path = cacheDir + cacheKey;
     SYS_Report("[imgcache] MISS key=%s url=%s (fetching)\n", cacheKey.c_str(), url.c_str());
+    // Labels the "<- 200" that follows -- without this, every image fetch
+    // (poster/backdrop/detail art, all routed through here) shows up in the
+    // log as an anonymous status code with no indication of what it was.
+    DebugLog::Log("%s", label.c_str());
     int status = httpRequest(url, "GET", "", "", authToken, outBytes);
     if (status == 200 && !outBytes.empty()) {
         FILE* f = fopen(path.c_str(), "wb");
@@ -1148,6 +1192,19 @@ bool JellyfinClient::fetchImageCached(const std::string& cacheKey,
                 SYS_Report("[imgcache] SAVE-FAILED key=%s (short write)\n", cacheKey.c_str());
         } else {
             SYS_Report("[imgcache] SAVE-FAILED key=%s (fopen)\n", cacheKey.c_str());
+        }
+    } else if (status == 404) {
+        // Confirmed absent (as opposed to a transient connection/server
+        // error, which should keep retrying) -- write an empty marker so
+        // this specific image is never requested over the network again.
+        // Backdrop lookups in particular chain 2-3 of these per item
+        // (Thumb -> series Backdrop -> Primary); without this, an item
+        // missing the earlier ones pays for a failed round trip on every
+        // single load, forever.
+        FILE* f = fopen(path.c_str(), "wb");
+        if (f) {
+            fclose(f);
+            SYS_Report("[imgcache] NEGATIVE-CACHED key=%s (404)\n", cacheKey.c_str());
         }
     }
     return status == 200;
@@ -1173,6 +1230,12 @@ int JellyfinClient::clearImageCache() {
     return removed;
 }
 
+static std::string primaryImageCacheKey(const std::string& itemId, int maxWidth, int maxHeight) {
+    char key[160];
+    snprintf(key, sizeof(key), "primary_%s_%dx%d.jpg", itemId.c_str(), maxWidth, maxHeight);
+    return key;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch raw bytes for an item's primary image (JPEG)
 // ---------------------------------------------------------------------------
@@ -1180,16 +1243,22 @@ bool JellyfinClient::getItemImageBytes(const std::string& serverUrl,
                                         const JellyfinAuth& auth,
                                         const std::string& itemId,
                                         int maxWidth, int maxHeight,
-                                        std::string& outBytes) {
+                                        std::string& outBytes,
+                                        const std::string& itemName) {
     char qs[256];
     snprintf(qs, sizeof(qs),
         "/Items/%s/Images/Primary?fillWidth=%d&fillHeight=%d&maxWidth=%d&maxHeight=%d&quality=82",
         itemId.c_str(), maxWidth, maxHeight, maxWidth, maxHeight);
     std::string url = serverUrl + qs;
 
-    char key[160];
-    snprintf(key, sizeof(key), "primary_%s_%dx%d.jpg", itemId.c_str(), maxWidth, maxHeight);
-    return fetchImageCached(key, url, auth.accessToken, outBytes);
+    std::string label = "Poster: " + (itemName.empty() ? itemId : itemName);
+    return fetchImageCached(primaryImageCacheKey(itemId, maxWidth, maxHeight), url, auth.accessToken, outBytes, label);
+}
+
+bool JellyfinClient::getCachedItemImageBytes(const std::string& itemId,
+                                             int maxWidth, int maxHeight,
+                                             std::string& outBytes) {
+    return tryReadCachedImage(primaryImageCacheKey(itemId, maxWidth, maxHeight), outBytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,29 +1276,60 @@ bool JellyfinClient::getItemBackdropBytes(const std::string& serverUrl,
              "?maxWidth=%d&maxHeight=%d&quality=82", maxWidth, maxHeight);
     char key[160];
 
+    std::string label = "Backdrop: " + (item.name.empty() ? item.id : item.name);
+
     if (item.type == "Episode") {
         // Episode still (Thumb)
         std::string url = serverUrl + "/Items/" + item.id + "/Images/Thumb" + sizeqs;
         snprintf(key, sizeof(key), "thumb_%s_%dx%d.jpg", item.id.c_str(), maxWidth, maxHeight);
-        if (fetchImageCached(key, url, auth.accessToken, outBytes) && !outBytes.empty()) return true;
+        if (fetchImageCached(key, url, auth.accessToken, outBytes, label) && !outBytes.empty()) return true;
         outBytes.clear();
         // Series backdrop
         if (!item.seriesId.empty()) {
             url = serverUrl + "/Items/" + item.seriesId + "/Images/Backdrop/0" + sizeqs;
             snprintf(key, sizeof(key), "backdrop_%s_%dx%d.jpg", item.seriesId.c_str(), maxWidth, maxHeight);
-            if (fetchImageCached(key, url, auth.accessToken, outBytes) && !outBytes.empty()) return true;
+            if (fetchImageCached(key, url, auth.accessToken, outBytes, label) && !outBytes.empty()) return true;
             outBytes.clear();
         }
     } else {
         // Movie / Series backdrop
         std::string url = serverUrl + "/Items/" + item.id + "/Images/Backdrop/0" + sizeqs;
         snprintf(key, sizeof(key), "backdrop_%s_%dx%d.jpg", item.id.c_str(), maxWidth, maxHeight);
-        if (fetchImageCached(key, url, auth.accessToken, outBytes) && !outBytes.empty()) return true;
+        if (fetchImageCached(key, url, auth.accessToken, outBytes, label) && !outBytes.empty()) return true;
         outBytes.clear();
     }
 
     // Fallback: Primary portrait image
-    return getItemImageBytes(serverUrl, auth, item.id, maxWidth, maxHeight, outBytes);
+    return getItemImageBytes(serverUrl, auth, item.id, maxWidth, maxHeight, outBytes, item.name);
+}
+
+bool JellyfinClient::getCachedItemBackdropBytes(const JellyfinItem& item,
+                                                int maxWidth, int maxHeight,
+                                                std::string& outBytes) {
+    char key[160];
+
+    if (item.type == "Episode") {
+        snprintf(key, sizeof(key), "thumb_%s_%dx%d.jpg", item.id.c_str(), maxWidth, maxHeight);
+        if (!tryReadCachedImage(key, outBytes)) return false; // unresolved tier
+        if (!outBytes.empty()) return true;
+
+        if (!item.seriesId.empty()) {
+            snprintf(key, sizeof(key), "backdrop_%s_%dx%d.jpg", item.seriesId.c_str(), maxWidth, maxHeight);
+            if (!tryReadCachedImage(key, outBytes)) return false;
+            if (!outBytes.empty()) return true;
+        }
+    } else {
+        snprintf(key, sizeof(key), "backdrop_%s_%dx%d.jpg", item.id.c_str(), maxWidth, maxHeight);
+        if (!tryReadCachedImage(key, outBytes)) return false;
+        if (!outBytes.empty()) return true;
+    }
+
+    // Every tier so far was a confirmed-absent (negative) cache entry --
+    // check the Primary fallback the same way. getCachedItemImageBytes
+    // already returns true for a negative entry there too, so the overall
+    // "no image, and we're sure" case correctly returns true with outBytes
+    // left empty.
+    return getCachedItemImageBytes(item.id, maxWidth, maxHeight, outBytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -1242,6 +1342,7 @@ bool JellyfinClient::getItemDetail(const std::string& serverUrl,
     std::string url = serverUrl + "/Items/" + itemId
         + "?Fields=Overview,Genres,OfficialRating,RunTimeTicks,MediaStreams,UserData";
     std::string resp;
+    DebugLog::Log("Loading details...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getItemDetail failed (HTTP " + std::to_string(status) + ")";
@@ -1368,6 +1469,7 @@ bool JellyfinClient::getSeasons(const std::string& serverUrl,
         seriesId.c_str(), auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading seasons...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getSeasons failed (HTTP " + std::to_string(status) + ")";
@@ -1403,6 +1505,7 @@ bool JellyfinClient::getEpisodes(const std::string& serverUrl,
         seriesId.c_str(), seasonId.c_str(), auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading episodes...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getEpisodes failed (HTTP " + std::to_string(status) + ")";
@@ -1438,6 +1541,7 @@ bool JellyfinClient::getContinueWatching(const std::string& serverUrl,
         auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading Continue Watching...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
 
@@ -1475,6 +1579,7 @@ bool JellyfinClient::getNextUp(const std::string& serverUrl,
         auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading Next Up...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
 
@@ -1519,6 +1624,7 @@ bool JellyfinClient::getMovieCollections(const std::string& serverUrl,
         auth.userId.c_str(), limit, startIndex);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading collections...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getMovieCollections failed (HTTP " + std::to_string(status) + ")";
@@ -1560,12 +1666,57 @@ bool JellyfinClient::getFavoriteMovies(const std::string& serverUrl,
         auth.userId.c_str(), parentId.c_str(), limit, startIndex);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading favorites...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getFavoriteMovies failed (HTTP " + std::to_string(status) + ")";
         return false;
     }
     totalCount = jsonGetInt(resp, "TotalRecordCount");
+    struct Ctx { JellyfinClient* self; std::vector<JellyfinItem>* out; };
+    Ctx ctx{ this, &out };
+    forEachItemObject(resp, [](const std::string& obj, void* vctx) {
+        Ctx* c = static_cast<Ctx*>(vctx);
+        JellyfinItem item;
+        item.id   = c->self->jsonGetString(obj, "Id");
+        item.name = c->self->jsonGetString(obj, "Name");
+        item.type = c->self->jsonGetString(obj, "Type");
+        item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        if (!item.id.empty() && !item.name.empty())
+            c->out->push_back(item);
+    }, &ctx);
+    return true;
+}
+
+bool JellyfinClient::getFavoriteSeries(const std::string& serverUrl,
+                                        const JellyfinAuth& auth,
+                                        const std::string& parentId,
+                                        int startIndex, int limit,
+                                        std::vector<JellyfinItem>& out,
+                                        int& totalCount) {
+    char qs[512];
+    snprintf(qs, sizeof(qs),
+        "/Users/%s/Items?ParentId=%s&IncludeItemTypes=Series"
+        "&Filters=IsFavorite"
+        "&SortBy=SortName&SortOrder=Ascending"
+        "&Fields=ProductionYear,UserData,RunTimeTicks"
+        "&EnableImages=false&Recursive=true"
+        "&Limit=%d&StartIndex=%d",
+        auth.userId.c_str(), parentId.c_str(), limit, startIndex);
+    std::string url  = serverUrl + qs;
+    std::string resp;
+    DebugLog::Log("Loading favorites...");
+    int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
+    if (status != 200) {
+        if (status >= 0) errMsg = "getFavoriteSeries failed (HTTP " + std::to_string(status) + ")";
+        return false;
+    }
+    totalCount = jsonGetInt(resp, "TotalRecordCount");
+    // TEMP diagnostic: user reports far more than their real ~22 favorite
+    // series showing up -- this pins down whether the server itself is
+    // returning an inflated TotalRecordCount (filter not applied server-
+    // side) versus a client-side rendering/pagination bug downstream.
+    DebugLog::Log("Favorites: server reports %d total", totalCount);
     struct Ctx { JellyfinClient* self; std::vector<JellyfinItem>* out; };
     Ctx ctx{ this, &out };
     forEachItemObject(resp, [](const std::string& obj, void* vctx) {
@@ -1600,6 +1751,7 @@ bool JellyfinClient::getGlobalFavorites(const std::string& serverUrl,
         auth.userId.c_str(), limit, startIndex);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading favorites...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getGlobalFavorites failed (HTTP " + std::to_string(status) + ")";
@@ -1634,6 +1786,7 @@ bool JellyfinClient::getMovieContinueWatching(const std::string& serverUrl,
         auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading Continue Watching...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
     struct Ctx { JellyfinClient* self; std::vector<JellyfinItem>* out; };
@@ -1668,6 +1821,7 @@ bool JellyfinClient::getMoviesLatest(const std::string& serverUrl,
         auth.userId.c_str(), parentId.c_str(), limit);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading latest movies...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
 
@@ -1756,6 +1910,7 @@ bool JellyfinClient::getTVContinueWatching(const std::string& serverUrl,
         auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading Continue Watching...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
     struct Ctx { JellyfinClient* self; std::vector<JellyfinItem>* out; };
@@ -1794,6 +1949,7 @@ bool JellyfinClient::getTVSeriesLatest(const std::string& serverUrl,
         auth.userId.c_str(), parentId.c_str(), limit);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading latest series...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
 
@@ -1844,6 +2000,7 @@ bool JellyfinClient::getTVUpcoming(const std::string& serverUrl,
         auth.userId.c_str(), limit);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading upcoming episodes...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
     struct Ctx { JellyfinClient* self; std::vector<JellyfinItem>* out; };
@@ -1885,6 +2042,7 @@ bool JellyfinClient::getMusicLatest(const std::string& serverUrl,
         auth.userId.c_str(), parentId.c_str(), limit);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading latest music...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
 
@@ -1946,6 +2104,7 @@ bool JellyfinClient::getPlaylists(const std::string& serverUrl,
         auth.userId.c_str(), limit, startIndex);
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading playlists...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getPlaylists failed (HTTP " + std::to_string(status) + ")";
@@ -1981,6 +2140,7 @@ bool JellyfinClient::getPlaylistTracks(const std::string& serverUrl,
         playlistId.c_str(), auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading playlist tracks...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) return false;
     struct Ctx { JellyfinClient* self; std::vector<JellyfinAudioItem>* out; };
@@ -2036,17 +2196,21 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
     // Jellyfin reads these from the body; the same-named query params are ignored
     // by the server-side session manager when selecting the play method.
     char bodyBuf[1024];
+    int maxBitrate = highBitrate ? 3000000 : 1000000; // see highBitrate's declaration for why
+    int resW, resH;
+    getEffectiveResolution(resW, resH); // see videoResMode's declaration for why
     // CodecProfiles with LessThanEqual Width/Height Conditions are the only way to
     // enforce output resolution in Jellyfin — MaxWidth/MaxHeight in the top-level
     // body are hints; the internal scale filter uses its own 1280px default unless
     // the device profile declares explicit width/height constraints.
-    static const char* codecProfiles =
+    char codecProfiles[256];
+    snprintf(codecProfiles, sizeof(codecProfiles),
         "[{\"Type\":\"Video\",\"Codec\":\"mpeg2video\",\"Conditions\":["
         "{\"Condition\":\"LessThanEqual\",\"Property\":\"Width\","
-            "\"Value\":\"848\",\"IsRequired\":true},"
+            "\"Value\":\"%d\",\"IsRequired\":true},"
         "{\"Condition\":\"LessThanEqual\",\"Property\":\"Height\","
-            "\"Value\":\"480\",\"IsRequired\":true}"
-        "]}]";
+            "\"Value\":\"%d\",\"IsRequired\":true}"
+        "]}]", resW, resH);
 
     if (subtitleStreamIndex >= 0) {
         snprintf(bodyBuf, sizeof(bodyBuf),
@@ -2054,8 +2218,8 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
             "\"MediaSourceId\":\"%s\","
             "\"AudioStreamIndex\":%d,"
             "\"SubtitleStreamIndex\":%d,"
-            "\"MaxStreamingBitrate\":1000000,"
-            "\"MaxWidth\":848,\"MaxHeight\":480,"
+            "\"MaxStreamingBitrate\":%d,"
+            "\"MaxWidth\":%d,\"MaxHeight\":%d,"
             "\"StartTimeTicks\":%lld,"
             "\"IsPlayback\":true,"
             "\"AutoOpenLiveStream\":true,"
@@ -2069,14 +2233,14 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
             "\"MaxAudioChannels\":\"2\",\"MaxFramerate\":24}],"
             "\"CodecProfiles\":%s,\"SubtitleProfiles\":[]}}",
             auth.userId.c_str(), mediaSourceId.c_str(),
-            audioStreamIndex, subtitleStreamIndex, (long long)startTimeTicks, codecProfiles);
+            audioStreamIndex, subtitleStreamIndex, maxBitrate, resW, resH, (long long)startTimeTicks, codecProfiles);
     } else {
         snprintf(bodyBuf, sizeof(bodyBuf),
             "{\"UserId\":\"%s\","
             "\"MediaSourceId\":\"%s\","
             "\"AudioStreamIndex\":%d,"
-            "\"MaxStreamingBitrate\":1000000,"
-            "\"MaxWidth\":848,\"MaxHeight\":480,"
+            "\"MaxStreamingBitrate\":%d,"
+            "\"MaxWidth\":%d,\"MaxHeight\":%d,"
             "\"StartTimeTicks\":%lld,"
             "\"IsPlayback\":true,"
             "\"AutoOpenLiveStream\":true,"
@@ -2090,13 +2254,14 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
             "\"MaxAudioChannels\":\"2\",\"MaxFramerate\":24}],"
             "\"CodecProfiles\":%s,\"SubtitleProfiles\":[]}}",
             auth.userId.c_str(), mediaSourceId.c_str(),
-            audioStreamIndex, (long long)startTimeTicks, codecProfiles);
+            audioStreamIndex, maxBitrate, resW, resH, (long long)startTimeTicks, codecProfiles);
     }
 
     SYS_Report("[PlaybackInfo] POST %s\n", fullUrl);
     SYS_Report("[PlaybackInfo] body: %.256s\n", bodyBuf);
 
     std::string resp;
+    DebugLog::Log("Requesting stream...");
     int status = httpRequest(fullUrl, "POST", "application/json", bodyBuf,
                              auth.accessToken, resp);
     SYS_Report("[PlaybackInfo] HTTP status=%d respLen=%d\n", status, (int)resp.size());
@@ -2124,13 +2289,25 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
     outPlaySessionId = jsonGetString(resp, "PlaySessionId");
     SYS_Report("[PlaybackInfo] PlaySessionId='%s'\n", outPlaySessionId.c_str());
 
+    // This overwrites whatever Jellyfin put in its own returned URL --
+    // these query params on the actual streaming GET request are what the
+    // server reads when the transcode really starts, so they're the
+    // effective ceiling, not MaxStreamingBitrate in the PlaybackInfo body
+    // above (that mostly just shapes which profile the server proposes).
+    // VideoBitrate is kept under maxBitrate's combined video+audio budget
+    // (same one used above) rather than hardcoded, so highBitrate actually
+    // changes what gets streamed.
+    char videoBitrateBuf[16], widthBuf[8], heightBuf[8];
+    snprintf(videoBitrateBuf, sizeof(videoBitrateBuf), "%d", maxBitrate - 192000);
+    snprintf(widthBuf, sizeof(widthBuf), "%d", resW);
+    snprintf(heightBuf, sizeof(heightBuf), "%d", resH);
     urlReplaceParam(relUrl, "VideoCodec", "mpeg2video");
     urlReplaceParam(relUrl, "AudioCodec", "mp3");
     urlReplaceParam(relUrl, "AudioBitrate", "192000");
-    urlReplaceParam(relUrl, "VideoBitrate", "700000");
+    urlReplaceParam(relUrl, "VideoBitrate", videoBitrateBuf);
     urlReplaceParam(relUrl, "MaxVideoBitDepth", "8");
-    urlReplaceParam(relUrl, "MaxWidth", "848");
-    urlReplaceParam(relUrl, "MaxHeight", "480");
+    urlReplaceParam(relUrl, "MaxWidth", widthBuf);
+    urlReplaceParam(relUrl, "MaxHeight", heightBuf);
     urlReplaceParam(relUrl, "MaxFramerate", "24");
 
     // When subtitles are off (subtitleStreamIndex < 0), Jellyfin may still
@@ -2158,6 +2335,7 @@ bool JellyfinClient::getTranscodingUrl(const std::string& serverUrl,
         if (q != std::string::npos) outUrl.replace(q, 2, "?");
     }
     SYS_Report("[PlaybackInfo] final URL length: %zu\n", outUrl.size());
+    DebugLog::Log("Stream: %dx%d, %d kbps video", resW, resH, (maxBitrate - 192000) / 1000);
     return true;
 }
 
@@ -2181,6 +2359,7 @@ bool JellyfinClient::reportPlaybackStart(const std::string& serverUrl,
         "\"IsMuted\":false}";
 
     std::string resp;
+    DebugLog::Log("Reporting playback start...");
     int status = httpRequest(serverUrl + "/Sessions/Playing",
                              "POST", "application/json", body,
                              auth.accessToken, resp);
@@ -2209,6 +2388,7 @@ bool JellyfinClient::reportPlaybackProgress(const std::string& serverUrl,
         "\"IsMuted\":false}";
 
     std::string resp;
+    DebugLog::Log("Saving progress...");
     int status = httpRequest(serverUrl + "/Sessions/Playing/Progress",
                              "POST", "application/json", body,
                              auth.accessToken, resp);
@@ -2232,10 +2412,17 @@ bool JellyfinClient::reportPlaybackStopped(const std::string& serverUrl,
         "\"PositionTicks\":" + ticksBuf + "}";
 
     std::string resp;
+    DebugLog::Log("Saving playback position...");
     int status = httpRequest(serverUrl + "/Sessions/Playing/Stopped",
                              "POST", "application/json", body,
                              auth.accessToken, resp);
-    return status == 204 || status == 200;
+    // TEMP diagnostic: user reports the resume position on the detail page
+    // stays stale after a B-exit, even navigating fully away and back --
+    // this confirms whether the save itself succeeded/failed server-side,
+    // as opposed to a client-side staleness/caching issue.
+    bool ok = status == 204 || status == 200;
+    DebugLog::Log(ok ? "Position saved (HTTP %d)" : "Position save FAILED (HTTP %d)", status);
+    return ok;
 }
 
 bool JellyfinClient::deleteActiveEncoding(const std::string& serverUrl,
@@ -2246,6 +2433,7 @@ bool JellyfinClient::deleteActiveEncoding(const std::string& serverUrl,
     std::string url = serverUrl + "/Videos/ActiveEncodings"
                       "?DeviceId=wiifin-wii&PlaySessionId=" + playSessionId;
     std::string resp;
+    DebugLog::Log("Stopping transcode...");
     int status = httpRequest(url, "DELETE", "", "", auth.accessToken, resp);
     SYS_Report("[WiiPlayer] deleteActiveEncoding status=%d\n", status);
     return status == 204 || status == 200;
@@ -2263,6 +2451,7 @@ bool JellyfinClient::getIntroTimestamps(const std::string& serverUrl,
     out = IntroInfo{};  /* clear output */
     std::string url = serverUrl + "/Episode/" + episodeId + "/IntroTimestamps";
     std::string resp;
+    DebugLog::Log("Loading intro markers...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status == 404) return true;   /* plugin not installed: not an error */
     if (status != 200) return true;   /* any other failure: silent, no intro */
@@ -2319,6 +2508,7 @@ bool JellyfinClient::getAlbumTracks(const std::string& serverUrl,
         auth.userId.c_str(), albumId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Loading tracks...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "getAlbumTracks failed (HTTP " + std::to_string(status) + ")";
@@ -2379,6 +2569,7 @@ bool JellyfinClient::getAudioStreamUrl(const std::string& serverUrl,
     SYS_Report("[AudioPlaybackInfo] POST %s\n", fullUrl);
 
     std::string resp;
+    DebugLog::Log("Requesting audio stream...");
     int status = httpRequest(fullUrl, "POST", "application/json", bodyBuf,
                              auth.accessToken, resp);
     if (status != 200) {
@@ -2464,6 +2655,7 @@ bool JellyfinClient::searchItems(const std::string& serverUrl,
 
     std::string url  = serverUrl + qs;
     std::string resp;
+    DebugLog::Log("Searching...");
     int status = httpRequest(url, "GET", "", "", auth.accessToken, resp);
     if (status != 200) {
         if (status >= 0) errMsg = "searchItems failed (HTTP " + std::to_string(status) + ")";

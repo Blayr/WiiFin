@@ -46,9 +46,14 @@ public:
 
     /* Called ~30 Hz from the background LWP thread.
      * irX/irY are WPAD IR coordinates in [0,640)×[0,480); irValid is false
-     * when the IR sensor is not visible (pointer off-screen). */
+     * when the IR sensor is not visible (pointer off-screen). gcDown is the
+     * subset of btnsDown that specifically originated from the GameCube pad
+     * this tick (edge-detected) -- vo_gx.c's own overlay/pause/seek handling
+     * never sees GC pad state, so those bits are always safe to act on
+     * directly even in video mode, unlike real-Wiimote-sourced bits which
+     * ov_tick may have already handled. */
     void tick(float timePos, int paused, uint32_t btnsDown, uint32_t btnsHeld,
-              float irX, float irY, bool irValid);
+              float irX, float irY, bool irValid, uint32_t gcDown = 0);
 
     /* Static trampoline: registered as g_wiifin_overlay_cb.
      * Called from the MPlayer main thread (rendering loop), safe to write
@@ -67,10 +72,37 @@ private:
         Main,       /* seek bar + time + basic controls */
         AudioPick,  /* audio track picker               */
         SubPick,    /* subtitle track picker             */
+        Help,       /* GC-pad shortcut reference screen  */
     };
     State state       = State::Hidden;
     int   hideTimer   = 0;          /* frames remaining before auto-hide    */
     float lastTimePos = -1.0f;
+
+    /* True when the current Main-state session was revealed via the GC pad
+     * (vo_gx.c never sees GC input, so its own overlay/pause/seek handling
+     * stays inactive) -- gates onFrame()'s native drawing and lets tick()
+     * safely perform pause/seek itself instead of deferring to ov_tick. */
+    bool nativeMode = false;
+
+    /* nativeMode-only: index (0-5) of the focused icon in the native
+     * control row -- Prev/-10s/Play-Pause/+10s/Next/Help -- moved with
+     * Left/Right, activated with A. Non-native (Wiimote/IR) sessions don't
+     * use this; their Left/Right stays a direct seek shortcut, matching
+     * vo_gx.c's own hover+click model. */
+    int mainFocus = 2; /* default to Play/Pause, the most-used action */
+
+    /* nativeMode-only: progress-bar scrubbing, entered via Down from the
+     * icon row. While true, Left/Right move a pending seek target
+     * (scrubPos, absolute seconds) instead of cycling icon focus -- A
+     * commits it with wii_player_seek_abs(), B/Up cancel back to the icon
+     * row without seeking. Lets you land on an arbitrary position (e.g.
+     * 16:30) instead of only ever moving 10s at a time. */
+    bool  barFocused    = false;
+    float scrubPos      = 0.0f;
+    int   barHoldFrames = 0; /* consecutive ticks Left/Right has been held -- drives step acceleration */
+    int   barMissFrames = 0; /* ticks since Left/Right last read as held -- grace period so a single
+                               * flickery frame (GC pad diagonal-suppression noise) doesn't reset
+                               * barHoldFrames back to the slow tier mid-hold */
 
     /* Sub-menu selection */
     int audioPickSel = 0;
@@ -78,6 +110,17 @@ private:
 
     /* Skip-intro prompt */
     bool introPromptShown = false;
+
+    /* Transient top-right volume HUD (Android-style): bumped on every
+     * adjustVolume() call, drawn by onFrame() while volIndicatorTimer > 0
+     * regardless of state/nativeMode -- MPlayer's mixer level isn't
+     * readable from WiiFin's side (would need patching the vendored
+     * libmplayer.a), so this is a relative 0..volLevelMax gauge WiiFin
+     * tracks itself from its own up/down presses, not a true % readout. */
+    static const int volLevelMax = 20;
+    int volLevel         = volLevelMax / 2;
+    int volIndicatorTimer = 0;
+    void adjustVolume(int delta);
 
     /* IR pointer state — written by tick(), read by onFrame() for rendering */
     float lastIrX    = -1.0f;
@@ -88,6 +131,7 @@ private:
     void activateMain();
     void activateAudioPick();
     void activateSubPick();
+    void activateHelp();
     void hide();
 
     void showOSD(const char* text, int durationMs = 4000);
