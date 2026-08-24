@@ -172,6 +172,8 @@ LibraryView::LibraryView(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf, GRRLIB_texImg* c
         posterLoader.init(&client, &serverUrl, &auth);
         detailLoader.init(&client, &serverUrl, &auth);
         activityLoader.init(&client, &serverUrl, &auth);
+        suggestLoaderA.init(&client, &serverUrl, &auth);
+        suggestLoaderB.init(&client, &serverUrl, &auth);
     }
 }
 
@@ -180,6 +182,8 @@ void LibraryView::shutdownImageLoader() {
         posterLoader.shutdown();
         detailLoader.shutdown();
         activityLoader.shutdown();
+        suggestLoaderA.shutdown();
+        suggestLoaderB.shutdown();
     }
 }
 
@@ -598,6 +602,8 @@ void LibraryView::releaseForPlayback() {
         posterLoader.shutdown();
         detailLoader.shutdown();
         activityLoader.shutdown();
+        suggestLoaderA.shutdown();
+        suggestLoaderB.shutdown();
     }
 }
 
@@ -617,6 +623,8 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
         posterLoader.init(&client, &serverUrl, &auth);
         detailLoader.init(&client, &serverUrl, &auth);
         activityLoader.init(&client, &serverUrl, &auth);
+        suggestLoaderA.init(&client, &serverUrl, &auth);
+        suggestLoaderB.init(&client, &serverUrl, &auth);
     }
 
     // Reset pending play fields
@@ -839,6 +847,7 @@ void LibraryView::loadGlobalFavorites() {
 }
 
 void LibraryView::freeMovieSuggestions() {
+    if (asyncPosterLoadingEnabled) { suggestLoaderA.cancelAll(); suggestLoaderB.cancelAll(); }
     for (int i = 0; i < 4; i++) {
         if (movieContTex[i]) { GRRLIB_FreeTexture(movieContTex[i]); movieContTex[i] = nullptr; }
     }
@@ -854,24 +863,59 @@ void LibraryView::loadMovieSuggestions() {
     runWithLoading([&]() {
         client.getMovieContinueWatching(serverUrl, auth, movieContItems);
         if ((int)movieContItems.size() > 4) movieContItems.resize(4);
+        client.getMoviesLatest(serverUrl, auth, movieLibId, 8, movieRecentItems);
+    });
+    if (asyncPosterLoadingEnabled) {
+        // Cached posters paint immediately, off the SD card; only genuine
+        // misses go to the background loader -- see loadPosters() for the
+        // same pattern. suggestLoaderA/B pump in MovieSuggestionsReady.
+        BackgroundImageLoader::Request reqsA[4];
+        int ra = 0;
         for (int i = 0; i < (int)movieContItems.size(); i++) {
             std::string imgBytes;
-            client.getItemImageBytes(serverUrl, auth, movieContItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes, movieContItems[i].name);
-            if (!imgBytes.empty())
-                movieContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
-                                                    (u32)imgBytes.size());
+            if (client.getCachedItemImageBytes(movieContItems[i].id, POSTER_W, POSTER_H, imgBytes)) {
+                if (!imgBytes.empty())
+                    movieContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+                continue;
+            }
+            reqsA[ra].itemId = movieContItems[i].id; reqsA[ra].itemName = movieContItems[i].name;
+            reqsA[ra].width = POSTER_W; reqsA[ra].height = POSTER_H; reqsA[ra].targetIndex = i;
+            ra++;
         }
-        client.getMoviesLatest(serverUrl, auth, movieLibId, 8, movieRecentItems);
+        suggestLoaderA.submitBatch(reqsA, ra);
+
+        BackgroundImageLoader::Request reqsB[8];
+        int rb = 0;
         for (int i = 0; i < (int)movieRecentItems.size(); i++) {
             std::string imgBytes;
-            client.getItemImageBytes(serverUrl, auth, movieRecentItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes, movieRecentItems[i].name);
-            if (!imgBytes.empty())
-                movieRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
-                                                      (u32)imgBytes.size());
+            if (client.getCachedItemImageBytes(movieRecentItems[i].id, POSTER_W, POSTER_H, imgBytes)) {
+                if (!imgBytes.empty())
+                    movieRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+                continue;
+            }
+            reqsB[rb].itemId = movieRecentItems[i].id; reqsB[rb].itemName = movieRecentItems[i].name;
+            reqsB[rb].width = POSTER_W; reqsB[rb].height = POSTER_H; reqsB[rb].targetIndex = i;
+            rb++;
         }
-    });
+        suggestLoaderB.submitBatch(reqsB, rb);
+    } else {
+        runWithLoading([&]() {
+            for (int i = 0; i < (int)movieContItems.size(); i++) {
+                std::string imgBytes;
+                client.getItemImageBytes(serverUrl, auth, movieContItems[i].id,
+                                         POSTER_W, POSTER_H, imgBytes, movieContItems[i].name);
+                if (!imgBytes.empty())
+                    movieContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+            for (int i = 0; i < (int)movieRecentItems.size(); i++) {
+                std::string imgBytes;
+                client.getItemImageBytes(serverUrl, auth, movieRecentItems[i].id,
+                                         POSTER_W, POSTER_H, imgBytes, movieRecentItems[i].name);
+                if (!imgBytes.empty())
+                    movieRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+        });
+    }
     movieSuggestRow     = 0;
     movieSuggestContSel = 0;
     movieSuggestRecSel  = 0;
@@ -910,6 +954,7 @@ void LibraryView::loadSeasons() {
 }
 
 void LibraryView::freeTVSuggestions() {
+    if (asyncPosterLoadingEnabled) { suggestLoaderA.cancelAll(); suggestLoaderB.cancelAll(); }
     for (int i = 0; i < 4; i++) {
         if (tvContTex[i]) { GRRLIB_FreeTexture(tvContTex[i]); tvContTex[i] = nullptr; }
     }
@@ -925,24 +970,56 @@ void LibraryView::loadTVSuggestions() {
     runWithLoading([&]() {
         client.getTVContinueWatching(serverUrl, auth, tvContItems);
         if ((int)tvContItems.size() > 4) tvContItems.resize(4);
+        client.getTVSeriesLatest(serverUrl, auth, tvLibId, 8, tvRecentItems);
+    });
+    if (asyncPosterLoadingEnabled) {
+        BackgroundImageLoader::Request reqsA[4];
+        int ra = 0;
         for (int i = 0; i < (int)tvContItems.size(); i++) {
             std::string imgBytes;
-            client.getItemBackdropBytes(serverUrl, auth, tvContItems[i],
-                                        POSTER_W, POSTER_H, imgBytes);
-            if (!imgBytes.empty())
-                tvContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
-                                               (u32)imgBytes.size());
+            if (client.getCachedItemBackdropBytes(tvContItems[i], POSTER_W, POSTER_H, imgBytes)) {
+                if (!imgBytes.empty())
+                    tvContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+                continue;
+            }
+            reqsA[ra].isBackdrop = true; reqsA[ra].backdropItem = tvContItems[i];
+            reqsA[ra].width = POSTER_W; reqsA[ra].height = POSTER_H; reqsA[ra].targetIndex = i;
+            ra++;
         }
-        client.getTVSeriesLatest(serverUrl, auth, tvLibId, 8, tvRecentItems);
+        suggestLoaderA.submitBatch(reqsA, ra);
+
+        BackgroundImageLoader::Request reqsB[8];
+        int rb = 0;
         for (int i = 0; i < (int)tvRecentItems.size(); i++) {
             std::string imgBytes;
-            client.getItemImageBytes(serverUrl, auth, tvRecentItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes, tvRecentItems[i].name);
-            if (!imgBytes.empty())
-                tvRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
-                                                  (u32)imgBytes.size());
+            if (client.getCachedItemImageBytes(tvRecentItems[i].id, POSTER_W, POSTER_H, imgBytes)) {
+                if (!imgBytes.empty())
+                    tvRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+                continue;
+            }
+            reqsB[rb].itemId = tvRecentItems[i].id; reqsB[rb].itemName = tvRecentItems[i].name;
+            reqsB[rb].width = POSTER_W; reqsB[rb].height = POSTER_H; reqsB[rb].targetIndex = i;
+            rb++;
         }
-    });
+        suggestLoaderB.submitBatch(reqsB, rb);
+    } else {
+        runWithLoading([&]() {
+            for (int i = 0; i < (int)tvContItems.size(); i++) {
+                std::string imgBytes;
+                client.getItemBackdropBytes(serverUrl, auth, tvContItems[i],
+                                            POSTER_W, POSTER_H, imgBytes);
+                if (!imgBytes.empty())
+                    tvContTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+            for (int i = 0; i < (int)tvRecentItems.size(); i++) {
+                std::string imgBytes;
+                client.getItemImageBytes(serverUrl, auth, tvRecentItems[i].id,
+                                         POSTER_W, POSTER_H, imgBytes, tvRecentItems[i].name);
+                if (!imgBytes.empty())
+                    tvRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+        });
+    }
     tvSuggestRow     = 0;
     tvSuggestContSel = 0;
     tvSuggestRecSel  = 0;
@@ -952,6 +1029,7 @@ void LibraryView::loadTVSuggestions() {
 }
 
 void LibraryView::freeTVUpcoming() {
+    if (asyncPosterLoadingEnabled) suggestLoaderA.cancelAll();
     for (int i = 0; i < 8; i++) {
         if (tvUpcomingTex[i]) { GRRLIB_FreeTexture(tvUpcomingTex[i]); tvUpcomingTex[i] = nullptr; }
     }
@@ -962,21 +1040,40 @@ void LibraryView::loadTVUpcoming() {
     freeTVUpcoming();
     runWithLoading([&]() {
         client.getTVUpcoming(serverUrl, auth, 8, tvUpcomingItems);
+    });
+    if (asyncPosterLoadingEnabled) {
+        BackgroundImageLoader::Request reqs[8];
+        int r = 0;
         for (int i = 0; i < (int)tvUpcomingItems.size(); i++) {
             std::string imgBytes;
-            client.getItemBackdropBytes(serverUrl, auth, tvUpcomingItems[i],
-                                        POSTER_W, POSTER_H, imgBytes);
-            if (!imgBytes.empty())
-                tvUpcomingTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
-                                                    (u32)imgBytes.size());
+            if (client.getCachedItemBackdropBytes(tvUpcomingItems[i], POSTER_W, POSTER_H, imgBytes)) {
+                if (!imgBytes.empty())
+                    tvUpcomingTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+                continue;
+            }
+            reqs[r].isBackdrop = true; reqs[r].backdropItem = tvUpcomingItems[i];
+            reqs[r].width = POSTER_W; reqs[r].height = POSTER_H; reqs[r].targetIndex = i;
+            r++;
         }
-    });
+        suggestLoaderA.submitBatch(reqs, r);
+    } else {
+        runWithLoading([&]() {
+            for (int i = 0; i < (int)tvUpcomingItems.size(); i++) {
+                std::string imgBytes;
+                client.getItemBackdropBytes(serverUrl, auth, tvUpcomingItems[i],
+                                            POSTER_W, POSTER_H, imgBytes);
+                if (!imgBytes.empty())
+                    tvUpcomingTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+        });
+    }
     tvUpcomingSel = 0;
     tvUpcomingOff = 0;
     state = State::TVUpcomingReady;
 }
 
 void LibraryView::freeMusicSuggestions() {
+    if (asyncPosterLoadingEnabled) suggestLoaderA.cancelAll();
     for (int i = 0; i < 8; i++) {
         if (musicRecentTex[i]) { GRRLIB_FreeTexture(musicRecentTex[i]); musicRecentTex[i] = nullptr; }
     }
@@ -987,15 +1084,33 @@ void LibraryView::loadMusicSuggestions() {
     freeMusicSuggestions();
     runWithLoading([&]() {
         client.getMusicLatest(serverUrl, auth, musicLibId, 8, musicRecentItems);
+    });
+    if (asyncPosterLoadingEnabled) {
+        BackgroundImageLoader::Request reqs[8];
+        int r = 0;
         for (int i = 0; i < (int)musicRecentItems.size(); i++) {
             std::string imgBytes;
-            client.getItemImageBytes(serverUrl, auth, musicRecentItems[i].id,
-                                     POSTER_W, POSTER_H, imgBytes, musicRecentItems[i].name);
-            if (!imgBytes.empty())
-                musicRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(),
-                                                     (u32)imgBytes.size());
+            if (client.getCachedItemImageBytes(musicRecentItems[i].id, POSTER_W, POSTER_H, imgBytes)) {
+                if (!imgBytes.empty())
+                    musicRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+                continue;
+            }
+            reqs[r].itemId = musicRecentItems[i].id; reqs[r].itemName = musicRecentItems[i].name;
+            reqs[r].width = POSTER_W; reqs[r].height = POSTER_H; reqs[r].targetIndex = i;
+            r++;
         }
-    });
+        suggestLoaderA.submitBatch(reqs, r);
+    } else {
+        runWithLoading([&]() {
+            for (int i = 0; i < (int)musicRecentItems.size(); i++) {
+                std::string imgBytes;
+                client.getItemImageBytes(serverUrl, auth, musicRecentItems[i].id,
+                                         POSTER_W, POSTER_H, imgBytes, musicRecentItems[i].name);
+                if (!imgBytes.empty())
+                    musicRecentTex[i] = loadJPEGTexture((const u8*)imgBytes.data(), (u32)imgBytes.size());
+            }
+        });
+    }
     musicSuggestSel = 0;
     musicSuggestOff = 0;
     state = State::MusicSuggestionsReady;
@@ -1729,6 +1844,22 @@ bool LibraryView::update(ir_t& ir) {
             return false;
 
         case State::MovieSuggestionsReady: {
+            if (asyncPosterLoadingEnabled) {
+                for (int i = 0; i < (int)movieContItems.size(); i++) {
+                    if (suggestLoaderA.isDone(i)) {
+                        GRRLIB_texImg* t = suggestLoaderA.takeResult(i);
+                        if (movieContTex[i]) GRRLIB_FreeTexture(movieContTex[i]);
+                        movieContTex[i] = t;
+                    }
+                }
+                for (int i = 0; i < (int)movieRecentItems.size(); i++) {
+                    if (suggestLoaderB.isDone(i)) {
+                        GRRLIB_texImg* t = suggestLoaderB.takeResult(i);
+                        if (movieRecentTex[i]) GRRLIB_FreeTexture(movieRecentTex[i]);
+                        movieRecentTex[i] = t;
+                    }
+                }
+            }
             if (Input::isBackPressed()) {
                 freeMovieSuggestions();
                 state = State::LibsReady;
@@ -1821,6 +1952,22 @@ bool LibraryView::update(ir_t& ir) {
             return false;
 
         case State::TVSuggestionsReady: {
+            if (asyncPosterLoadingEnabled) {
+                for (int i = 0; i < (int)tvContItems.size(); i++) {
+                    if (suggestLoaderA.isDone(i)) {
+                        GRRLIB_texImg* t = suggestLoaderA.takeResult(i);
+                        if (tvContTex[i]) GRRLIB_FreeTexture(tvContTex[i]);
+                        tvContTex[i] = t;
+                    }
+                }
+                for (int i = 0; i < (int)tvRecentItems.size(); i++) {
+                    if (suggestLoaderB.isDone(i)) {
+                        GRRLIB_texImg* t = suggestLoaderB.takeResult(i);
+                        if (tvRecentTex[i]) GRRLIB_FreeTexture(tvRecentTex[i]);
+                        tvRecentTex[i] = t;
+                    }
+                }
+            }
             if (Input::isBackPressed()) {
                 freeTVSuggestions();
                 state = State::LibsReady;
@@ -1913,6 +2060,15 @@ bool LibraryView::update(ir_t& ir) {
         }
 
         case State::TVUpcomingReady: {
+            if (asyncPosterLoadingEnabled) {
+                for (int i = 0; i < (int)tvUpcomingItems.size(); i++) {
+                    if (suggestLoaderA.isDone(i)) {
+                        GRRLIB_texImg* t = suggestLoaderA.takeResult(i);
+                        if (tvUpcomingTex[i]) GRRLIB_FreeTexture(tvUpcomingTex[i]);
+                        tvUpcomingTex[i] = t;
+                    }
+                }
+            }
             if (Input::isBackPressed()) {
                 freeTVUpcoming();
                 state = State::LibsReady;
@@ -1970,6 +2126,15 @@ bool LibraryView::update(ir_t& ir) {
             return false;
 
         case State::MusicSuggestionsReady: {
+            if (asyncPosterLoadingEnabled) {
+                for (int i = 0; i < (int)musicRecentItems.size(); i++) {
+                    if (suggestLoaderA.isDone(i)) {
+                        GRRLIB_texImg* t = suggestLoaderA.takeResult(i);
+                        if (musicRecentTex[i]) GRRLIB_FreeTexture(musicRecentTex[i]);
+                        musicRecentTex[i] = t;
+                    }
+                }
+            }
             if (Input::isBackPressed()) {
                 freeMusicSuggestions();
                 state = State::LibsReady;

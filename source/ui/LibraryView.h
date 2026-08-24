@@ -97,6 +97,16 @@ private:
     // Continue Watching uses targetIndex 0..2, Next Up uses 100..102.
     static const int NEXTUP_TARGET_OFFSET = 100;
 
+    // Shared by Movie/TV Suggestions and TV Upcoming/Music Suggestions --
+    // these screens are mutually exclusive states, so two loaders are enough
+    // even though four load*() functions use them. suggestLoaderA holds the
+    // "Continue Watching" row (Movie/TV Suggestions, up to 4) or the single
+    // row (TV Upcoming / Music Suggestions, up to 8); suggestLoaderB holds
+    // the "Recently Added" row (Movie/TV Suggestions, up to 8) and is unused
+    // by the single-row screens.
+    BackgroundImageLoader suggestLoaderA;
+    BackgroundImageLoader suggestLoaderB;
+
     enum class State {
         LibsInit,     // render loading screen, then transition
         LibsLoad,     // blocking API call
