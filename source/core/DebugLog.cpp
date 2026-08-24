@@ -28,26 +28,33 @@ namespace {
 namespace DebugLog {
 
 void Log(const char* fmt, ...) {
-    char buf[kLineLen];
+    // Full message, not truncated to the HUD's compact width -- the on-screen
+    // HUD ring only ever shows kLineLen (40) chars, but the full-history
+    // in-app viewer and the on-disk log have plenty of room and shouldn't
+    // lose detail just because the HUD does.
+    char full[200];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    vsnprintf(full, sizeof(full), fmt, ap);
     va_end(ap);
 
-    // HUD ring buffer
+    // HUD ring buffer -- deliberately truncated to kLineLen, it's a small
+    // corner overlay.
     for (int i = 0; i < kHudLines - 1; i++)
         memcpy(s_hudLines[i], s_hudLines[i + 1], kLineLen);
-    strncpy(s_hudLines[kHudLines - 1], buf, kLineLen - 1);
+    strncpy(s_hudLines[kHudLines - 1], full, kLineLen - 1);
     s_hudLines[kHudLines - 1][kLineLen - 1] = '\0';
     if (s_hudCount < kHudLines) s_hudCount++;
 
     // Timestamped history entry (relative to boot -- Wii's RTC isn't
     // trustworthy, see JellyfinClient's TLS date-check comments; relative
     // ordering/timing is what actually matters for debugging anyway).
+    // Uses the full untruncated message -- this is what the in-app Log
+    // Viewer and the on-disk log actually show.
     u32 ms = (u32)ticks_to_millisecs(gettime());
-    char line[64];
+    char line[220];
     snprintf(line, sizeof(line), "[%02u:%02u.%03u] %s",
-             (ms / 60000) % 100, (ms / 1000) % 60, ms % 1000, buf);
+             (ms / 60000) % 100, (ms / 1000) % 60, ms % 1000, full);
 
     if (s_history.size() >= kMaxHistory) s_history.pop_front();
     s_history.push_back(line);

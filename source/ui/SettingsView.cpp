@@ -262,7 +262,7 @@ void SettingsView::renderLogViewer() {
     drawGradientBG();
 
     GRRLIB_PrintfTTF(0, 14, font, "Debug Log", 24, 0xFFFFFFFF);
-    GRRLIB_Rectangle(30, 50, 580, 1, 0x4499FF88, 1);
+    GRRLIB_Rectangle(15, 50, 610, 1, 0x4499FF88, 1);
 
     const auto& history = DebugLog::History();
     const int visibleLines = 20;
@@ -270,13 +270,13 @@ void SettingsView::renderLogViewer() {
     const int listY0 = 62;
 
     if (history.empty()) {
-        GRRLIB_PrintfTTF(30, listY0, font, "Nothing logged yet this session.", 14, 0x778899FF);
+        GRRLIB_PrintfTTF(15, listY0, font, "Nothing logged yet this session.", 14, 0x778899FF);
     } else {
         int shown = (int)history.size() - logScrollTop;
         if (shown > visibleLines) shown = visibleLines;
         for (int i = 0; i < shown; i++) {
             const std::string& line = history[logScrollTop + i];
-            GRRLIB_PrintfTTF(30, listY0 + i * lineH, font, line.c_str(), 13, 0xCCEEFFEE);
+            GRRLIB_PrintfTTF(15, listY0 + i * lineH, font, line.c_str(), 13, 0xCCEEFFEE);
         }
     }
 
