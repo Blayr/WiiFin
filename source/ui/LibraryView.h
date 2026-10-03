@@ -91,6 +91,7 @@ private:
     GRRLIB_texImg*  ringTex;
     GRRLIB_texImg*  userIconTex = nullptr;
     GRRLIB_texImg*  watchedIconTex = nullptr; // blue check, drawn on played episodes/posters
+    GRRLIB_texImg*  partialIconTex = nullptr; // half-blue circle, partly played list rows
     JellyfinClient& client;
     JellyfinAuth    auth;
     std::string     serverUrl;
@@ -369,7 +370,8 @@ private:
     // List-row label at (textX, ry) with a watched check at the row's far
     // right when played (label clipped so it can't run under the check).
     void drawRowLabel(int textX, int ry, const std::string& label, int fontSize,
-                      u32 color, bool played);
+                      u32 color, bool played, bool partial = false);
+    int  drawRowIcon(GRRLIB_texImg* tex, int x, int y, int size); // returns on-screen width
     void drawDetailView(ir_t& ir);
     void clampScroll();
     void clampSeasonScroll();

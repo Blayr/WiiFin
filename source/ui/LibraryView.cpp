@@ -5,6 +5,8 @@ extern unsigned char data_icon_user_png[];
 extern unsigned int  data_icon_user_png_len;
 extern unsigned char data_icon_watched_png[];
 extern unsigned int  data_icon_watched_png_len;
+extern unsigned char data_icon_partial_png[];
+extern unsigned int  data_icon_partial_png_len;
 #include "../jellyfin/JellyfinClient.h"
 #include "../core/SoundFX.h"
 #include "../core/I18n.h"
@@ -171,6 +173,7 @@ LibraryView::LibraryView(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf, GRRLIB_texImg* c
       asyncPosterLoadingEnabled(asyncPosterLoading) {
     userIconTex = GRRLIB_LoadTexture(data_icon_user_png);
     watchedIconTex = GRRLIB_LoadTexture(data_icon_watched_png);
+    partialIconTex = GRRLIB_LoadTexture(data_icon_partial_png);
     if (asyncPosterLoadingEnabled) {
         posterLoader.init(&client, &serverUrl, &auth);
         detailLoader.init(&client, &serverUrl, &auth);
@@ -277,10 +280,14 @@ void LibraryView::drawCenteredText(int x, int y, int w,
 // Jellyfin-style watched indicators, in the same light blue as the
 // check icon (Jellyfin's accent #00A4DC).
 int LibraryView::drawWatchedIcon(int x, int y, int size) {
-    if (!watchedIconTex) return 0;
+    return drawRowIcon(watchedIconTex, x, y, size);
+}
+
+int LibraryView::drawRowIcon(GRRLIB_texImg* tex, int x, int y, int size) {
+    if (!tex) return 0;
     float ws = WiiUtils::wsScaleX();
-    float sc = (float)size / watchedIconTex->h;
-    GRRLIB_DrawImg(x, y, watchedIconTex, 0, sc * ws, sc, 0xFFFFFFFF);
+    float sc = (float)size / tex->h;
+    GRRLIB_DrawImg(x, y, tex, 0, sc * ws, sc, 0xFFFFFFFF);
     return (int)(size * ws + 0.5f);
 }
 
@@ -308,19 +315,22 @@ void LibraryView::drawPosterWatchState(const JellyfinItem& item, int px, int py,
 }
 
 void LibraryView::drawRowLabel(int textX, int ry, const std::string& label,
-                               int fontSize, u32 color, bool played) {
+                               int fontSize, u32 color, bool played, bool partial) {
     int textY = ry + 8; // matches the existing list rows
-    if (!played || !watchedIconTex) {
+    bool showCheck   = played && watchedIconTex;
+    bool showPartial = !played && partial && partialIconTex;
+    if (!showCheck && !showPartial) {
         GRRLIB_PrintfTTF(textX, textY, font, label.c_str(), fontSize, color);
         return;
     }
     const int ICON = 24;
     int iconW = (int)(ICON * WiiUtils::wsScaleX() + 0.5f);
     int ix    = LIST_X + LIST_W - 10 - iconW;
+    int iy    = ry + (ROW_H - 2 - ICON) / 2;
     GRRLIB_ClipDrawing(textX, ry, (u32)(ix - 8 - textX), ROW_H - 2);
     GRRLIB_PrintfTTF(textX, textY, font, label.c_str(), fontSize, color);
     GRRLIB_ClipReset();
-    drawWatchedIcon(ix, ry + (ROW_H - 2 - ICON) / 2, ICON);
+    drawRowIcon(showCheck ? watchedIconTex : partialIconTex, ix, iy, ICON);
 }
 
 void LibraryView::drawCursor(ir_t& ir) {
@@ -629,6 +639,7 @@ void LibraryView::releaseForPlayback() {
     client.closeKeepAliveConnection();
     if (userIconTex) { GRRLIB_FreeTexture(userIconTex); userIconTex = nullptr; }
     if (watchedIconTex) { GRRLIB_FreeTexture(watchedIconTex); watchedIconTex = nullptr; }
+    if (partialIconTex) { GRRLIB_FreeTexture(partialIconTex); partialIconTex = nullptr; }
     freePosters();
     posterTexturesStale = true;
     freeCWTextures();
@@ -673,6 +684,8 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
         userIconTex = GRRLIB_LoadTexture(data_icon_user_png);
     if (!watchedIconTex)
         watchedIconTex = GRRLIB_LoadTexture(data_icon_watched_png);
+    if (!partialIconTex)
+        partialIconTex = GRRLIB_LoadTexture(data_icon_partial_png);
 
     // Restart the background loader threads stopped in releaseForPlayback().
     if (asyncPosterLoadingEnabled) {
@@ -3200,7 +3213,8 @@ void LibraryView::render(ir_t& ir) {
             else
                 snprintf(epLabel, sizeof(epLabel), "%s", episodes[idx].name.c_str());
             std::string labelStr = filterDejaVu(epLabel, 45);
-            drawRowLabel(LIST_X + 10, ry, labelStr, 20, 0xEEEEEEFF, episodes[idx].played);
+            drawRowLabel(LIST_X + 10, ry, labelStr, 20, 0xEEEEEEFF, episodes[idx].played,
+                         episodes[idx].playbackPositionTicks > 0);
         }
         if (n > ITEMS_VISIBLE) {
             const int SB_X = 614, SB_Y = LIST_Y, SB_H = ITEMS_VISIBLE * ROW_H;
@@ -4626,7 +4640,8 @@ void LibraryView::renderSearchResults(ir_t& ir) {
                 snprintf(yb, sizeof(yb), " (%d)", searchResults[idx].year);
                 label += yb;
             }
-            drawRowLabel(LIST_X + 50, ry, label, 16, textCol, searchResults[idx].played);
+            drawRowLabel(LIST_X + 50, ry, label, 16, textCol, searchResults[idx].played,
+                         searchResults[idx].playbackPositionTicks > 0);
         }
 
         // Scroll indicator

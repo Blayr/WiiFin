@@ -57,7 +57,8 @@ ASSET_OFILES := \
 	$(BUILD)/fx_backspace_mp3.o \
 	$(BUILD)/fx_back_mp3.o \
 	$(BUILD)/icon_user_png.o \
-	$(BUILD)/icon_watched_png.o
+	$(BUILD)/icon_watched_png.o \
+	$(BUILD)/icon_partial_png.o
 
 OFILES      := $(ASSET_OFILES) $(SRC_OFILES)
 
@@ -213,6 +214,10 @@ $(BUILD)/icon_user_png.o: data/images/icon_user.png
 $(BUILD)/icon_watched_png.o: data/images/icon_watched.png
 	xxd -i -n data_icon_watched_png $< > $(BUILD)/icon_watched_png.h
 	$(CC) -x c -c -o $@ $(BUILD)/icon_watched_png.h
+
+$(BUILD)/icon_partial_png.o: data/images/icon_partial.png
+	xxd -i -n data_icon_partial_png $< > $(BUILD)/icon_partial_png.h
+	$(CC) -x c -c -o $@ $(BUILD)/icon_partial_png.h
 
 # Safe inclusion of dependency files
 -include $(DEPFILES)
