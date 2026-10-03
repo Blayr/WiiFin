@@ -1,0 +1,40 @@
+GRRLIB patch: keep the system font loaded across GRRLIB_Exit()/GRRLIB_Init().
+
+Applied after grrlib_reentrant_init_patch.diff (see Dockerfile.dev). WiiFin
+calls GRRLIB_Exit()/GRRLIB_Init() around every video playback session. Stock
+GRRLIB_Exit() frees the system font and the next GRRLIB_Init() reloads it via
+libogc's SYS_InitFont(), which reads the packed (Yay0) font from the boot ROM
+with EXI DMA.
+
+EXI DMA can only address MEM1 -- its address register is too narrow for MEM2.
+After the first MPlayer session WiiFin's heap has grown into MEM2, so the
+re-allocated font buffer can land there; the ROM data is then written to the
+truncated address in MEM1 instead, which is where WiiFin's code lives. That
+silently overwrote ~12-16 KB of code at a different address each time --
+Program exceptions / random crashes on real hardware, "IntCPU: Unknown
+instruction" under Dolphin with MMU emulation. Found with per-page code
+checksums (source/core/CodeIntegrity.cpp) around the post-playback
+GRRLIB_Init(); the overwritten page began with "Yay0".
+
+The first load happens at app startup while the heap is still entirely in
+MEM1, so keeping that font for the app's lifetime avoids the DMA entirely
+from then on (GRRLIB_InitSystemFont() already returns early while loaded).
+
+--- a/GRRLIB/GRRLIB/GRRLIB_core.c
++++ b/GRRLIB/GRRLIB/GRRLIB_core.c
+@@ -259,8 +259,13 @@
+         gp_fifo = NULL;
+     }
+ 
+-    // Done with the system font
+-    GRRLIB_ExitSystemFont();
++    // Keep the system font loaded across GRRLIB_Exit()/GRRLIB_Init() cycles
++    // (WiiFin patch, see grrlib_keep_system_font_patch.diff): reloading it
++    // DMAs the packed font from ROM over EXI, which can only address MEM1.
++    // Once an app's heap has grown into MEM2, the re-allocated font buffer
++    // lands there and the ROM data is written to the truncated (MEM1)
++    // address instead -- over the app's own code. GRRLIB_InitSystemFont()
++    // already returns early while the font is still loaded.
+ 
+     // Done with TTF
+     GRRLIB_ExitTTF();

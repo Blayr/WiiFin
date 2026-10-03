@@ -36,11 +36,16 @@ RUN apt-get update -qq \
 # silently still in use (real-hardware-only use-after-free — the intermittent
 # post-playback hang/crash chased down in this fork's history).
 COPY libs/grrlib/grrlib_reentrant_init_patch.diff /tmp/grrlib_reentrant_init_patch.diff
+# Second patch: keep the system font loaded across Exit/Init -- reloading it
+# DMAs ROM data over EXI, which can't reach MEM2 and so overwrote WiiFin's
+# code once the heap had grown there. See the patch file for the writeup.
+COPY libs/grrlib/grrlib_keep_system_font_patch.diff /tmp/grrlib_keep_system_font_patch.diff
 RUN git clone https://github.com/GRRLIB/GRRLIB.git /tmp/GRRLIB \
     && git -C /tmp/GRRLIB checkout 1945955f941ff945f282c0993c1f71b722e6310a \
     && patch -p1 -d /tmp/GRRLIB < /tmp/grrlib_reentrant_init_patch.diff \
+    && patch -p1 -d /tmp/GRRLIB < /tmp/grrlib_keep_system_font_patch.diff \
     && make -C /tmp/GRRLIB/GRRLIB/lib/pngu clean all install \
     && make -C /tmp/GRRLIB/GRRLIB/GRRLIB clean all install \
-    && rm -rf /tmp/GRRLIB /tmp/grrlib_reentrant_init_patch.diff
+    && rm -rf /tmp/GRRLIB /tmp/grrlib_reentrant_init_patch.diff /tmp/grrlib_keep_system_font_patch.diff
 
 WORKDIR /project
