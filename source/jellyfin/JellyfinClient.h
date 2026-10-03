@@ -15,6 +15,7 @@ struct JellyfinItem {
     int         year = 0;
     long long   playbackPositionTicks = 0;
     long long   runtimeTicks          = 0;
+    bool        played                = false; // UserData.Played
     std::string seriesName;    // Episode only
     std::string seriesId;      // Episode only — parent series ID for backdrop lookup
     int         seasonNumber  = 0;
@@ -25,6 +26,7 @@ struct JellyfinSeason {
     std::string id;
     std::string name;
     int         indexNumber = 0;
+    bool        played      = false; // UserData.Played (every episode watched)
 };
 
 struct JellyfinEpisode {
@@ -33,6 +35,7 @@ struct JellyfinEpisode {
     int         indexNumber  = 0; // episode number within season
     int         seasonNumber = 0;
     long long   playbackPositionTicks = 0;
+    bool        played = false; // UserData.Played
 };
 
 struct JellyfinPerson {
@@ -60,6 +63,7 @@ struct JellyfinItemDetail {
     int         year                  = 0;
     long long   runtimeTicks          = 0; // RunTimeTicks (64-bit from Jellyfin API)
     long long   playbackPositionTicks = 0; // UserData.PlaybackPositionTicks
+    bool        played                = false; // UserData.Played
     std::vector<std::string>    genres;          // up to 4
     std::vector<JellyfinPerson> people;          // up to 6 (cast + director)
     std::vector<MediaStream>    audioStreams;    // audio tracks

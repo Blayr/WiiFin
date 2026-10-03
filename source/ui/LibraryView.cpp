@@ -3,6 +3,8 @@
 
 extern unsigned char data_icon_user_png[];
 extern unsigned int  data_icon_user_png_len;
+extern unsigned char data_icon_watched_png[];
+extern unsigned int  data_icon_watched_png_len;
 #include "../jellyfin/JellyfinClient.h"
 #include "../core/SoundFX.h"
 #include "../core/I18n.h"
@@ -168,6 +170,7 @@ LibraryView::LibraryView(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf, GRRLIB_texImg* c
     : font(f), jpFont(jf), cursorTex(cursor), ringTex(ring), client(c), auth(a), serverUrl(url),
       asyncPosterLoadingEnabled(asyncPosterLoading) {
     userIconTex = GRRLIB_LoadTexture(data_icon_user_png);
+    watchedIconTex = GRRLIB_LoadTexture(data_icon_watched_png);
     if (asyncPosterLoadingEnabled) {
         posterLoader.init(&client, &serverUrl, &auth);
         detailLoader.init(&client, &serverUrl, &auth);
@@ -269,6 +272,55 @@ void LibraryView::drawCenteredText(int x, int y, int w,
     int tx = x + (w - tw) / 2;
     if (tx < x) tx = x;
     GRRLIB_PrintfTTF(tx, y, font, text, sz, col);
+}
+
+// Jellyfin-style watched indicators, in the same light blue as the
+// check icon (Jellyfin's accent #00A4DC).
+int LibraryView::drawWatchedIcon(int x, int y, int size) {
+    if (!watchedIconTex) return 0;
+    float ws = WiiUtils::wsScaleX();
+    float sc = (float)size / watchedIconTex->h;
+    GRRLIB_DrawImg(x, y, watchedIconTex, 0, sc * ws, sc, 0xFFFFFFFF);
+    return (int)(size * ws + 0.5f);
+}
+
+void LibraryView::drawProgressBar(int x, int yBottom, int w,
+                                  long long posTicks, long long runTicks) {
+    if (posTicks <= 0 || runTicks <= 0) return;
+    const int BAR_H = 5;
+    long long pct = posTicks * 100LL / runTicks;
+    if (pct > 100) pct = 100;
+    int fillW = (int)(w * pct / 100);
+    GRRLIB_Rectangle(x, yBottom - BAR_H, w, BAR_H, 0x00000080, 1);
+    if (fillW > 0)
+        GRRLIB_Rectangle(x, yBottom - BAR_H, fillW, BAR_H, 0x00A4DCFF, 1);
+}
+
+void LibraryView::drawPosterWatchState(const JellyfinItem& item, int px, int py,
+                                       int visW, int h) {
+    if (item.played) {
+        const int ICON = 22, MARGIN = 4;
+        int iconW = (int)(ICON * WiiUtils::wsScaleX() + 0.5f);
+        drawWatchedIcon(px + visW - MARGIN - iconW, py + MARGIN, ICON);
+    } else {
+        drawProgressBar(px, py + h, visW, item.playbackPositionTicks, item.runtimeTicks);
+    }
+}
+
+void LibraryView::drawRowLabel(int textX, int ry, const std::string& label,
+                               int fontSize, u32 color, bool played) {
+    int textY = ry + 8; // matches the existing list rows
+    if (!played || !watchedIconTex) {
+        GRRLIB_PrintfTTF(textX, textY, font, label.c_str(), fontSize, color);
+        return;
+    }
+    const int ICON = 24;
+    int iconW = (int)(ICON * WiiUtils::wsScaleX() + 0.5f);
+    int ix    = LIST_X + LIST_W - 10 - iconW;
+    GRRLIB_ClipDrawing(textX, ry, (u32)(ix - 8 - textX), ROW_H - 2);
+    GRRLIB_PrintfTTF(textX, textY, font, label.c_str(), fontSize, color);
+    GRRLIB_ClipReset();
+    drawWatchedIcon(ix, ry + (ROW_H - 2 - ICON) / 2, ICON);
 }
 
 void LibraryView::drawCursor(ir_t& ir) {
@@ -576,6 +628,7 @@ void LibraryView::freeNextUpTextures() {
 void LibraryView::releaseForPlayback() {
     client.closeKeepAliveConnection();
     if (userIconTex) { GRRLIB_FreeTexture(userIconTex); userIconTex = nullptr; }
+    if (watchedIconTex) { GRRLIB_FreeTexture(watchedIconTex); watchedIconTex = nullptr; }
     freePosters();
     posterTexturesStale = true;
     freeCWTextures();
@@ -618,6 +671,8 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
     // Reload the user icon (freed by releaseForPlayback → freePosters path or destructor)
     if (!userIconTex)
         userIconTex = GRRLIB_LoadTexture(data_icon_user_png);
+    if (!watchedIconTex)
+        watchedIconTex = GRRLIB_LoadTexture(data_icon_watched_png);
 
     // Restart the background loader threads stopped in releaseForPlayback().
     if (asyncPosterLoadingEnabled) {
@@ -2918,14 +2973,9 @@ void LibraryView::render(ir_t& ir) {
                     GRRLIB_Rectangle(cx - 2, cardY - 2,          2,        ACT_CARD_H + 4, 0x4499FFFF, 1);
                     GRRLIB_Rectangle(cx + visW, cardY - 2,       2,        ACT_CARD_H + 4, 0x4499FFFF, 1);
                 }
-                if (showPct && item.playbackPositionTicks > 0 && item.runtimeTicks > 0) {
-                    int pct   = (int)(item.playbackPositionTicks * 100LL / item.runtimeTicks);
-                    if (pct > 100) pct = 100;
-                    int fillW = visW * pct / 100;
-                    GRRLIB_Rectangle(cx, cardY + ACT_CARD_H - 4, visW,  4, 0x0A1420FF, 1);
-                    if (fillW > 0)
-                        GRRLIB_Rectangle(cx, cardY + ACT_CARD_H - 4, fillW, 4, 0x44AAFFFF, 1);
-                }
+                if (showPct)
+                    drawProgressBar(cx, cardY + ACT_CARD_H, visW,
+                                    item.playbackPositionTicks, item.runtimeTicks);
                 // Title + subtitle below card (strings pre-computed in buildActDisplayStrings)
                 GRRLIB_PrintfTTF(cx, cardY + ACT_CARD_H + 2,  font, mainTitle.c_str(), 13, 0xEEEEEEFF);
                 if (!subTitle.empty())
@@ -3095,7 +3145,8 @@ void LibraryView::render(ir_t& ir) {
             else                   bg = 0x111827AA;
             GRRLIB_Rectangle(LIST_X, ry, LIST_W, ROW_H - 2, bg, 1);
             if (sel) GRRLIB_Rectangle(LIST_X, ry, 3, ROW_H - 2, 0x4499FFFF, 1);
-            GRRLIB_PrintfTTF(LIST_X + 10, ry + 8, font, filterDejaVu(seasons[idx].name, 45).c_str(), 20, 0xEEEEEEFF);
+            drawRowLabel(LIST_X + 10, ry, filterDejaVu(seasons[idx].name, 45), 20, 0xEEEEEEFF,
+                         seasons[idx].played);
         }
         if (n > ITEMS_VISIBLE) {
             const int SB_X = 614, SB_Y = LIST_Y, SB_H = ITEMS_VISIBLE * ROW_H;
@@ -3141,7 +3192,7 @@ void LibraryView::render(ir_t& ir) {
             else
                 snprintf(epLabel, sizeof(epLabel), "%s", episodes[idx].name.c_str());
             std::string labelStr = filterDejaVu(epLabel, 45);
-            GRRLIB_PrintfTTF(LIST_X + 10, ry + 8, font, labelStr.c_str(), 20, 0xEEEEEEFF);
+            drawRowLabel(LIST_X + 10, ry, labelStr, 20, 0xEEEEEEFF, episodes[idx].played);
         }
         if (n > ITEMS_VISIBLE) {
             const int SB_X = 614, SB_Y = LIST_Y, SB_H = ITEMS_VISIBLE * ROW_H;
@@ -3316,17 +3367,7 @@ void LibraryView::render(ir_t& ir) {
                 if (tx < px + 4) tx = px + 4;
                 GRRLIB_PrintfTTF(tx, py + POSTER_H / 2 - 6, font, posterLabels[i].c_str(), 12, 0x8899AAFF);
             }
-            // Progress bar at bottom of poster slot
-            if (i < (int)items.size() &&
-                items[i].playbackPositionTicks > 0 && items[i].runtimeTicks > 0) {
-                int pct   = (int)(items[i].playbackPositionTicks * 100LL / items[i].runtimeTicks);
-                if (pct > 100) pct = 100;
-                int barY  = py + POSTER_H - 4;
-                int fillW = visW * pct / 100;
-                GRRLIB_Rectangle(px, barY, visW, 4, 0x0A1420FF, 1);
-                if (fillW > 0)
-                    GRRLIB_Rectangle(px, barY, fillW, 4, 0x44AAFFFF, 1);
-            }
+            drawPosterWatchState(items[i], px, py, visW, POSTER_H);
         }
 
         // Page navigation arrows (right of poster grid)
@@ -3462,6 +3503,8 @@ void LibraryView::render(ir_t& ir) {
                 GRRLIB_PrintfTTF(tx, py + POSTER_H / 2 - 6, font, posterLabels[i].c_str(), 12, 0x8899AAFF);
             }
 
+            drawPosterWatchState(items[i], px, py, visW, POSTER_H);
+
             // Type badge (Movie / Series / Album)
             if (i < (int)items.size()) {
                 const char* badge = labelForType(items[i].type);
@@ -3575,15 +3618,7 @@ void LibraryView::render(ir_t& ir) {
                 GRRLIB_Rectangle(cx - 3, cardY - 3, 3, SG_CH + 6,       0x4499FFFF, 1);
                 GRRLIB_Rectangle(cx + visW, cardY - 3, 3, SG_CH + 6,    0x4499FFFF, 1);
             }
-            // Progress bar
-            if (item.playbackPositionTicks > 0 && item.runtimeTicks > 0) {
-                int pct   = (int)(item.playbackPositionTicks * 100LL / item.runtimeTicks);
-                if (pct > 100) pct = 100;
-                int fillW = visW * pct / 100;
-                GRRLIB_Rectangle(cx, cardY + SG_CH - 4, visW, 4, 0x0A1420FF, 1);
-                if (fillW > 0)
-                    GRRLIB_Rectangle(cx, cardY + SG_CH - 4, fillW, 4, 0x44AAFFFF, 1);
-            }
+            drawPosterWatchState(item, cx, cardY, visW, SG_CH);
             // Title below card (truncated to card width)
             std::string title = filterDejaVu(item.name, 20);
             while (!title.empty() && (int)GRRLIB_WidthTTF(font, title.c_str(), 12) > visW) {
@@ -3704,14 +3739,7 @@ void LibraryView::render(ir_t& ir) {
                 GRRLIB_Rectangle(cx - 3, cardY - 3, 3, SG_CH + 6,    0x4499FFFF, 1);
                 GRRLIB_Rectangle(cx + visW, cardY - 3, 3, SG_CH + 6, 0x4499FFFF, 1);
             }
-            if (item.playbackPositionTicks > 0 && item.runtimeTicks > 0) {
-                int pct   = (int)(item.playbackPositionTicks * 100LL / item.runtimeTicks);
-                if (pct > 100) pct = 100;
-                int fillW = visW * pct / 100;
-                GRRLIB_Rectangle(cx, cardY + SG_CH - 4, visW, 4, 0x0A1420FF, 1);
-                if (fillW > 0)
-                    GRRLIB_Rectangle(cx, cardY + SG_CH - 4, fillW, 4, 0x44AAFFFF, 1);
-            }
+            drawPosterWatchState(item, cx, cardY, visW, SG_CH);
             std::string title = filterDejaVu(
                 item.type == "Episode" && !item.seriesName.empty() ? item.seriesName : item.name, 20);
             while (!title.empty() && (int)GRRLIB_WidthTTF(font, title.c_str(), 12) > visW) {
@@ -4168,7 +4196,18 @@ void LibraryView::drawDetailView(ir_t& ir) {
             strncat(meta, "  ", sizeof(meta) - strlen(meta) - 1);
             strncat(meta, detail.officialRating.c_str(), sizeof(meta) - strlen(meta) - 1);
         }
-        if (meta[0]) { GRRLIB_PrintfTTF(INFO_X, y, font, meta, 15, 0xAABBCCFF); y += 20; }
+        int mx = INFO_X;
+        if (meta[0]) {
+            GRRLIB_PrintfTTF(INFO_X, y, font, meta, 15, 0xAABBCCFF);
+            mx += (int)GRRLIB_WidthTTF(font, meta, 15) + 12;
+        }
+        // Watched check + label, trailing the meta line (or on its own line
+        // if there's no meta).
+        if (detail.played) {
+            mx += drawWatchedIcon(mx, y, 17) + 5;
+            GRRLIB_PrintfTTF(mx, y, font, "Watched", 15, 0x00A4DCFF);
+        }
+        if (meta[0] || detail.played) y += 20;
     }
 
     // ---- Resume hint (shown when playback position is saved) ----
@@ -4579,7 +4618,7 @@ void LibraryView::renderSearchResults(ir_t& ir) {
                 snprintf(yb, sizeof(yb), " (%d)", searchResults[idx].year);
                 label += yb;
             }
-            GRRLIB_PrintfTTF(LIST_X + 50, ry + 8, font, label.c_str(), 16, textCol);
+            drawRowLabel(LIST_X + 50, ry, label, 16, textCol, searchResults[idx].played);
         }
 
         // Scroll indicator

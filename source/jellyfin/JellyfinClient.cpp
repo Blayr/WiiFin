@@ -1343,6 +1343,9 @@ bool JellyfinClient::getItems(const std::string& serverUrl,
         item.name = c->self->jsonGetString(obj, "Name");
         item.type = c->self->jsonGetString(obj, "Type");
         item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             c->out->push_back(item);
     }, &ctx);
@@ -1391,6 +1394,9 @@ bool JellyfinClient::getAlbumsByArtist(const std::string& serverUrl,
         item.name = c->self->jsonGetString(obj, "Name");
         item.type = c->self->jsonGetString(obj, "Type");
         item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             c->out->push_back(item);
     }, &ctx);
@@ -1637,6 +1643,7 @@ bool JellyfinClient::getItemDetail(const std::string& serverUrl,
     out.year                  = jsonGetInt(resp,    "ProductionYear");
     out.runtimeTicks          = jsonGetLongLong(resp, "RunTimeTicks");
     out.playbackPositionTicks = jsonGetLongLong(resp, "PlaybackPositionTicks");
+    out.played                = jsonGetBool(resp,   "Played");
 
     // Genres array: ["Action","Comedy",...]
     {
@@ -1746,7 +1753,7 @@ bool JellyfinClient::getSeasons(const std::string& serverUrl,
                                  std::vector<JellyfinSeason>& out) {
     char qs[512];
     snprintf(qs, sizeof(qs),
-        "/Shows/%s/Seasons?UserId=%s&Fields=IndexNumber&EnableImages=false",
+        "/Shows/%s/Seasons?UserId=%s&Fields=IndexNumber,UserData&EnableImages=false",
         seriesId.c_str(), auth.userId.c_str());
     std::string url  = serverUrl + qs;
     std::string resp;
@@ -1765,6 +1772,7 @@ bool JellyfinClient::getSeasons(const std::string& serverUrl,
         s.id          = c->self->jsonGetString(obj, "Id");
         s.name        = c->self->jsonGetString(obj, "Name");
         s.indexNumber = c->self->jsonGetInt(obj,    "IndexNumber");
+        s.played      = c->self->jsonGetBool(obj,   "Played");
         if (!s.id.empty()) c->out->push_back(s);
     }, &ctx);
 
@@ -1803,6 +1811,7 @@ bool JellyfinClient::getEpisodes(const std::string& serverUrl,
         e.indexNumber           = c->self->jsonGetInt(obj,    "IndexNumber");
         e.seasonNumber          = c->self->jsonGetInt(obj,    "ParentIndexNumber");
         e.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        e.played                = c->self->jsonGetBool(obj, "Played");
         if (!e.id.empty()) c->out->push_back(e);
     }, &ctx);
 
@@ -1835,6 +1844,7 @@ bool JellyfinClient::getContinueWatching(const std::string& serverUrl,
         item.name                  = c->self->jsonGetString(obj, "Name");
         item.type                  = c->self->jsonGetString(obj, "Type");
         item.year                  = c->self->jsonGetInt(obj,    "ProductionYear");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         item.seriesName            = c->self->jsonGetString(obj, "SeriesName");
         item.seriesId              = c->self->jsonGetString(obj, "SeriesId");
         item.seasonNumber          = c->self->jsonGetInt(obj,    "ParentIndexNumber");
@@ -1873,6 +1883,8 @@ bool JellyfinClient::getNextUp(const std::string& serverUrl,
         item.name          = c->self->jsonGetString(obj, "Name");
         item.type          = c->self->jsonGetString(obj, "Type");
         item.year          = c->self->jsonGetInt(obj,    "ProductionYear");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         item.seriesName    = c->self->jsonGetString(obj, "SeriesName");
         item.seriesId      = c->self->jsonGetString(obj, "SeriesId");
         item.seasonNumber  = c->self->jsonGetInt(obj,    "ParentIndexNumber");
@@ -1921,6 +1933,9 @@ bool JellyfinClient::getMovieCollections(const std::string& serverUrl,
         item.name = c->self->jsonGetString(obj, "Name");
         item.type = c->self->jsonGetString(obj, "Type");
         item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             c->out->push_back(item);
     }, &ctx);
@@ -1963,6 +1978,9 @@ bool JellyfinClient::getFavoriteMovies(const std::string& serverUrl,
         item.name = c->self->jsonGetString(obj, "Name");
         item.type = c->self->jsonGetString(obj, "Type");
         item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             c->out->push_back(item);
     }, &ctx);
@@ -2007,6 +2025,9 @@ bool JellyfinClient::getFavoriteSeries(const std::string& serverUrl,
         item.name = c->self->jsonGetString(obj, "Name");
         item.type = c->self->jsonGetString(obj, "Type");
         item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             c->out->push_back(item);
     }, &ctx);
@@ -2048,6 +2069,9 @@ bool JellyfinClient::getGlobalFavorites(const std::string& serverUrl,
         item.name = c->self->jsonGetString(obj, "Name");
         item.type = c->self->jsonGetString(obj, "Type");
         item.year = c->self->jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             c->out->push_back(item);
     }, &ctx);
@@ -2079,6 +2103,7 @@ bool JellyfinClient::getMovieContinueWatching(const std::string& serverUrl,
         item.name                  = c->self->jsonGetString(obj, "Name");
         item.type                  = c->self->jsonGetString(obj, "Type");
         item.year                  = c->self->jsonGetInt(obj,    "ProductionYear");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         item.runtimeTicks          = c->self->jsonGetLongLong(obj, "RunTimeTicks");
         item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
         if (!item.id.empty())
@@ -2133,6 +2158,9 @@ bool JellyfinClient::getMoviesLatest(const std::string& serverUrl,
         item.name = jsonGetString(obj, "Name");
         item.type = jsonGetString(obj, "Type");
         item.year = jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             out.push_back(item);
     }
@@ -2203,6 +2231,7 @@ bool JellyfinClient::getTVContinueWatching(const std::string& serverUrl,
         item.name                  = c->self->jsonGetString(obj, "Name");
         item.type                  = c->self->jsonGetString(obj, "Type");
         item.year                  = c->self->jsonGetInt(obj,    "ProductionYear");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         item.seriesName            = c->self->jsonGetString(obj, "SeriesName");
         item.seriesId              = c->self->jsonGetString(obj, "SeriesId");
         item.seasonNumber          = c->self->jsonGetInt(obj,    "ParentIndexNumber");
@@ -2261,6 +2290,9 @@ bool JellyfinClient::getTVSeriesLatest(const std::string& serverUrl,
         item.name = jsonGetString(obj, "Name");
         item.type = jsonGetString(obj, "Type");
         item.year = jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             out.push_back(item);
     }
@@ -2293,6 +2325,8 @@ bool JellyfinClient::getTVUpcoming(const std::string& serverUrl,
         item.name          = c->self->jsonGetString(obj, "Name");
         item.type          = c->self->jsonGetString(obj, "Type");
         item.year          = c->self->jsonGetInt(obj,    "ProductionYear");
+        item.playbackPositionTicks = c->self->jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = c->self->jsonGetBool(obj, "Played");
         item.seriesName    = c->self->jsonGetString(obj, "SeriesName");
         item.seriesId      = c->self->jsonGetString(obj, "SeriesId");
         item.seasonNumber  = c->self->jsonGetInt(obj,    "ParentIndexNumber");
@@ -2361,6 +2395,9 @@ bool JellyfinClient::getMusicLatest(const std::string& serverUrl,
         item.name = jsonGetString(obj, "Name");
         item.type = jsonGetString(obj, "Type");
         item.year = jsonGetInt(obj, "ProductionYear");
+        item.runtimeTicks          = jsonGetLongLong(obj, "RunTimeTicks");
+        item.playbackPositionTicks = jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = jsonGetBool(obj, "Played");
         if (!item.id.empty() && !item.name.empty())
             out.push_back(item);
     }
@@ -2981,6 +3018,8 @@ bool JellyfinClient::searchItems(const std::string& serverUrl,
         item.name          = jsonGetString(obj, "Name");
         item.type          = jsonGetString(obj, "Type");
         item.year          = jsonGetInt(obj, "ProductionYear");
+        item.playbackPositionTicks = jsonGetLongLong(obj, "PlaybackPositionTicks");
+        item.played                = jsonGetBool(obj, "Played");
         item.seriesName    = jsonGetString(obj, "Series");   // field name is "Series" in hints
         item.seriesId      = jsonGetString(obj, "SeriesId");
         item.seasonNumber  = jsonGetInt(obj, "ParentIndexNumber");

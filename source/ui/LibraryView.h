@@ -87,6 +87,7 @@ private:
     GRRLIB_texImg*  cursorTex;
     GRRLIB_texImg*  ringTex;
     GRRLIB_texImg*  userIconTex = nullptr;
+    GRRLIB_texImg*  watchedIconTex = nullptr; // blue check, drawn on played episodes/posters
     JellyfinClient& client;
     JellyfinAuth    auth;
     std::string     serverUrl;
@@ -353,6 +354,19 @@ private:
     void drawGradientBG();
     void drawCenteredText(int x, int y, int w, const char* text, int sz, u32 col);
     void drawCursor(ir_t& ir);
+    // Watched indicators (Jellyfin-style blue check / light-blue progress bar).
+    // drawWatchedIcon: size px tall at (x, y), returns on-screen width
+    // (narrowed on 16:9 like everything else).
+    int  drawWatchedIcon(int x, int y, int size);
+    // Partial-progress bar along the bottom of a w-wide slot ending at yBottom.
+    void drawProgressBar(int x, int yBottom, int w, long long posTicks, long long runTicks);
+    // Watched check (top-right) or partial-progress bar (bottom) over a
+    // poster/card slot at (px, py), visW x h on screen.
+    void drawPosterWatchState(const JellyfinItem& item, int px, int py, int visW, int h);
+    // List-row label at (textX, ry) with a watched check at the row's far
+    // right when played (label clipped so it can't run under the check).
+    void drawRowLabel(int textX, int ry, const std::string& label, int fontSize,
+                      u32 color, bool played);
     void drawDetailView(ir_t& ir);
     void clampScroll();
     void clampSeasonScroll();

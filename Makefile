@@ -56,7 +56,8 @@ ASSET_OFILES := \
 	$(BUILD)/fx_loading_mp3.o \
 	$(BUILD)/fx_backspace_mp3.o \
 	$(BUILD)/fx_back_mp3.o \
-	$(BUILD)/icon_user_png.o
+	$(BUILD)/icon_user_png.o \
+	$(BUILD)/icon_watched_png.o
 
 OFILES      := $(ASSET_OFILES) $(SRC_OFILES)
 
@@ -208,6 +209,10 @@ $(BUILD)/stub_zone.o: source/stub_zone.s tools/stub_zone.bin
 $(BUILD)/icon_user_png.o: data/images/icon_user.png
 	xxd -i -n data_icon_user_png $< > $(BUILD)/icon_user_png.h
 	$(CC) -x c -c -o $@ $(BUILD)/icon_user_png.h
+
+$(BUILD)/icon_watched_png.o: data/images/icon_watched.png
+	xxd -i -n data_icon_watched_png $< > $(BUILD)/icon_watched_png.h
+	$(CC) -x c -c -o $@ $(BUILD)/icon_watched_png.h
 
 # Safe inclusion of dependency files
 -include $(DEPFILES)
