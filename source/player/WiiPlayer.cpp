@@ -219,15 +219,24 @@ static void* bgThreadFunc(void*)
     /* Initial scan so prevHeld reflects the real current state and avoids
      * treating already-held buttons as new presses on the first tick. */
     if (audioMode) WPAD_ScanPads();
+    PAD_ScanPads();
     WPADData* wd0 = WPAD_Data(WPAD_CHAN_0);
-    u32 prevHeld = wd0 ? wd0->btns_h : 0;
-    int prevPaused = g_mplayer_paused;
     /* Tracked separately from prevHeld so we can tell whether a given
      * button-down edge came from the GameCube pad specifically (see
      * gcDown below) -- vo_gx.c's own pause/seek handling never sees GC
      * pad state, so GC-sourced presses are always safe for PlayerOverlay
-     * to act on directly even in video mode. */
-    u32 prevGcHeld = 0;
+     * to act on directly even in video mode.
+     * Seeded from the pad's CURRENT state (and folded into prevHeld, since
+     * `held` below includes GC bits): starting from 0 made any GC button
+     * held at session start -- still held from the press that launched
+     * playback, or reported stuck by the controller -- look like a fresh
+     * press on the first tick. B there means "exit playback" (Hidden
+     * state), so the session quit before playing anything, got promoted
+     * to PLAYER_STOP_ERROR, and App retried it into the same quit -- a
+     * retry loop. */
+    u32 prevGcHeld = Input::gcButtonsAsWpad(/*held=*/true);
+    u32 prevHeld = (wd0 ? wd0->btns_h : 0) | prevGcHeld;
+    int prevPaused = g_mplayer_paused;
     while (!s_bg_stop) {
         /* If the user pressed the Wii power button or reset button,
          * stop MPlayer so wii_player_play() returns cleanly and App.cpp
