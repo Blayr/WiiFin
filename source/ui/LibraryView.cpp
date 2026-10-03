@@ -48,8 +48,12 @@ GRRLIB_texImg* loadJPEGTexture(const u8* data, u32 size) {
     JpegErrMgr jerr __attribute__((aligned(32)));
     // Strip buffer: 4 scanlines at a time — avoids a large w*h*3 intermediate
     // allocation and the associated heap pressure / fragmentation.
-    unsigned char* strip = nullptr;
-    GRRLIB_texImg* tex   = nullptr;
+    // volatile: both are assigned after setjmp() below and read again in its
+    // error branch. Without it their values after longjmp() are
+    // indeterminate (may be a stale register copy), and that branch would
+    // free() garbage -- heap corruption that crashes somewhere else later.
+    unsigned char* volatile strip = nullptr;
+    GRRLIB_texImg* volatile tex   = nullptr;
 
     // err MUST be set before jpeg_create_decompress
     cinfo.err = jpeg_std_error(&jerr.pub);
