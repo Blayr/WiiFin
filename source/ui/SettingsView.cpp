@@ -3,15 +3,23 @@
 #include "../core/DebugLog.h"
 #include "../version.h"
 
-static const int NUM_SETTINGS = 7; // extensible
+static const int NUM_SETTINGS = 8; // extensible
 static const int ROW_Y0 = 58;
 static const int ROW_H  = 46; // actual drawn box height -- see draw*Row()
 static const int ROW_DY = 48; // row-to-row spacing (includes the gap)
-static inline int rowY(int i) { return ROW_Y0 + i * ROW_DY; }
+// Rows that fit between the title rule and the credits block (y=400); the
+// list scrolls to keep the focused row in view once there are more.
+static const int VISIBLE_ROWS = 7;
 
 SettingsView::SettingsView(GRRLIB_texImg* btn, GRRLIB_ttfFont* f, JellyfinClient& c,
-                           bool& music, bool& debugLogFile)
-    : btnTex(btn), font(f), client(c), musicEnabled(music), debugLogFileEnabled(debugLogFile) {}
+                           bool& music, bool& debugLogFile, bool& bgImageLoading)
+    : btnTex(btn), font(f), client(c), musicEnabled(music), debugLogFileEnabled(debugLogFile),
+      bgImageLoadingEnabled(bgImageLoading) {}
+
+// Screen Y of setting row i given the current scroll position. Only
+// meaningful for visible rows (see isRowVisible).
+#define rowY(i) (ROW_Y0 + ((i) - scrollTop) * ROW_DY)
+#define isRowVisible(i) ((i) >= scrollTop && (i) < scrollTop + VISIBLE_ROWS)
 
 // ---------------------------------------------------------------
 void SettingsView::drawGradientBG() {
@@ -116,10 +124,14 @@ bool SettingsView::update(ir_t& ir) {
 
     if (Input::isUpPressed())   { selectedIndex = (selectedIndex - 1 + NUM_SETTINGS) % NUM_SETTINGS; irMode = false; }
     if (Input::isDownPressed()) { selectedIndex = (selectedIndex + 1) % NUM_SETTINGS; irMode = false; }
+    // Keep the focused row on screen (also handles wrap-around).
+    if (selectedIndex < scrollTop) scrollTop = selectedIndex;
+    if (selectedIndex >= scrollTop + VISIBLE_ROWS) scrollTop = selectedIndex - VISIBLE_ROWS + 1;
 
     // IR hover
     if (ir.valid) {
         for (int i = 0; i < NUM_SETTINGS; i++) {
+            if (!isRowVisible(i)) continue;
             int ry = rowY(i);
             if (ir.x >= 60 && ir.x <= 580 && ir.y >= ry && ir.y <= ry + ROW_H) {
                 selectedIndex = i;
@@ -142,16 +154,19 @@ bool SettingsView::update(ir_t& ir) {
                 break;
             }
             case 3: musicEnabled       = !musicEnabled;        break;
+            // Read by LibraryView's constructor, so it applies the next time
+            // a profile's library is opened, not to the one already open.
+            case 4: bgImageLoadingEnabled = !bgImageLoadingEnabled; break;
             // One-shot: only fires while cacheClearedCount is still -1 (unset
             // this time Settings was opened). Re-pressing afterward is a no-op
             // rather than clearing an already-empty cache and overwriting the
             // "Cleared N" message with "Cleared 0".
-            case 4: if (cacheClearedCount < 0) cacheClearedCount = client.clearImageCache(); break;
-            case 5:
+            case 5: if (cacheClearedCount < 0) cacheClearedCount = client.clearImageCache(); break;
+            case 6:
                 debugLogFileEnabled = !debugLogFileEnabled;
                 DebugLog::SetFileLoggingEnabled(debugLogFileEnabled);
                 break;
-            case 6:
+            case 7:
                 viewingLog  = true;
                 logScrollTop = 0;
                 break;
@@ -162,6 +177,7 @@ bool SettingsView::update(ir_t& ir) {
     // IR click
     if (ir.valid && aPressed) {
         for (int i = 0; i < NUM_SETTINGS; i++) {
+            if (!isRowVisible(i)) continue;
             int ry = rowY(i);
             if (ir.x >= 60 && ir.x <= 580 && ir.y >= ry && ir.y <= ry + ROW_H)
                 fireAction(i);
@@ -193,13 +209,14 @@ void SettingsView::render(ir_t& ir) {
     GRRLIB_PrintfTTF(0, 14, font, "Settings", 24, 0xFFFFFFFF);
     GRRLIB_Rectangle(60, 50, 520, 1, 0x4499FF88, 1);
 
-    // Settings rows
+    // Settings rows -- only those inside the scroll window are drawn.
+    if (isRowVisible(0))
     drawToggleRow(60, rowY(0), 520,
         "SSL Verification",
         "Validate the server HTTPS certificate (disable for self-signed certs)",
         client.sslVerify, selectedIndex == 0);
 
-    {
+    if (isRowVisible(1)) {
         using BM = JellyfinClient::BitrateMode;
         char bitrateDesc[96];
         const char* bitrateVal;
@@ -228,7 +245,7 @@ void SettingsView::render(ir_t& ir) {
         drawCycleRow(60, rowY(1), 520, "Bitrate", bitrateDesc, bitrateVal, selectedIndex == 1);
     }
 
-    {
+    if (isRowVisible(2)) {
         using VRM = JellyfinClient::VideoResMode;
         const char* resDesc;
         const char* resVal;
@@ -249,26 +266,45 @@ void SettingsView::render(ir_t& ir) {
         drawCycleRow(60, rowY(2), 520, "Video Resolution", resDesc, resVal, selectedIndex == 2);
     }
 
+    if (isRowVisible(3))
     drawToggleRow(60, rowY(3), 520,
         "Background Music",
         "Play background music in menus",
         musicEnabled, selectedIndex == 3);
+
+    if (isRowVisible(4))
+    drawToggleRow(60, rowY(4), 520,
+        "Background Image Loading",
+        "Load posters in the background (applies next time a profile is opened)",
+        bgImageLoadingEnabled, selectedIndex == 4);
 
     char cacheDesc[64];
     if (cacheClearedCount >= 0)
         snprintf(cacheDesc, sizeof(cacheDesc), "Cleared %d cached image(s)", cacheClearedCount);
     else
         snprintf(cacheDesc, sizeof(cacheDesc), "Frees SD card space by deleting cached posters/backdrops");
-    drawActionRow(60, rowY(4), 520,
-        "Clear Image Cache", cacheDesc, selectedIndex == 4, cacheClearedCount >= 0);
+    if (isRowVisible(5))
+    drawActionRow(60, rowY(5), 520,
+        "Clear Image Cache", cacheDesc, selectedIndex == 5, cacheClearedCount >= 0);
 
-    drawToggleRow(60, rowY(5), 520,
+    if (isRowVisible(6))
+    drawToggleRow(60, rowY(6), 520,
         "Debug Log File",
         "Write the debug log to sd:/apps/WiiFin/wiifin_log.txt (off by default)",
-        debugLogFileEnabled, selectedIndex == 5);
+        debugLogFileEnabled, selectedIndex == 6);
 
-    drawActionRow(60, rowY(6), 520,
-        "View Debug Log", "Browse this session's log on-screen", selectedIndex == 6, false);
+    if (isRowVisible(7))
+    drawActionRow(60, rowY(7), 520,
+        "View Debug Log", "Browse this session's log on-screen", selectedIndex == 7, false);
+
+    // Scrollbar to the right of the rows, only when the list overflows.
+    if (NUM_SETTINGS > VISIBLE_ROWS) {
+        const int sbX = 588, sbY = ROW_Y0, sbH = VISIBLE_ROWS * ROW_DY - (ROW_DY - ROW_H);
+        int thumbH = sbH * VISIBLE_ROWS / NUM_SETTINGS;
+        int thumbY = sbY + (sbH - thumbH) * scrollTop / (NUM_SETTINGS - VISIBLE_ROWS);
+        GRRLIB_Rectangle(sbX, sbY, 4, sbH, 0x2A3A4AFF, 1);
+        GRRLIB_Rectangle(sbX, thumbY, 4, thumbH, 0x4499FFFF, 1);
+    }
 
     // Credits block
     GRRLIB_Rectangle(60, 400, 520, 1, 0x4499FF44, 1);

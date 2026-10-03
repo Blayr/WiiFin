@@ -1365,7 +1365,8 @@ void App::loop() {
                 }
                 case 1: {
                     // Launch Settings view
-                    SettingsView sv(btnTex, font, jellyfinClient, musicEnabled, debugLogFileEnabled);
+                    SettingsView sv(btnTex, font, jellyfinClient, musicEnabled, debugLogFileEnabled,
+                                    bgImageLoadingEnabled);
                     // See the matching comment in runProfilePicker() -- one
                     // settle frame before this screen's first input poll, so
                     // the A press that opened Settings can't also register

@@ -6,7 +6,8 @@
 class SettingsView {
 public:
     SettingsView(GRRLIB_texImg* btn, GRRLIB_ttfFont* font, JellyfinClient& client,
-                bool& musicEnabled, bool& debugLogFileEnabled);
+                bool& musicEnabled, bool& debugLogFileEnabled,
+                bool& bgImageLoadingEnabled);
 
     // Returns true when the user exits (B or back)
     bool update(ir_t& ir);
@@ -18,9 +19,11 @@ private:
     JellyfinClient& client;
     bool&           musicEnabled;
     bool&           debugLogFileEnabled;
+    bool&           bgImageLoadingEnabled;
 
     int  selectedIndex = 0;
     bool irMode        = false;
+    int  scrollTop     = 0; // first visible row -- the list scrolls, see VISIBLE_ROWS
 
     // -1 = cache hasn't been cleared this time Settings was opened;
     // otherwise the number of files removed by the last clear.
