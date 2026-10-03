@@ -72,6 +72,11 @@ INCLUDE := $(foreach dir,$(INCLUDES), -I$(CURDIR)/$(dir)) \
 CFLAGS      := -g -O2 -Wall -MMD -MP $(MACHDEP) $(INCLUDE)
 CXXFLAGS    := $(CFLAGS)
 LDFLAGS     := -g $(MACHDEP) -Wl,-Map,$(TARGET).map -T $(CURDIR)/tools/wii_wiifin.ld
+# Route libogc's wait-queue alloc/free through source/core/LwpQueueFix.cpp:
+# GX_Init()/VIDEO_Init() leak a slot of a 64-slot pool on every re-init, and
+# WiiFin re-inits several times per playback session -- exhausting it hangs
+# GX_WaitDrawDone() with interrupts off. See that file.
+LDFLAGS     += -Wl,--wrap=LWP_InitQueue -Wl,--wrap=LWP_CloseQueue
 LIBPATHS    := -L$(LIBOGC_LIB) -L/opt/devkitpro/portlibs/wii/lib -L/opt/devkitpro/portlibs/ppc/lib \
                -L$(CURDIR)/libs/mbedtls/lib
 
