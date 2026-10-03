@@ -748,6 +748,26 @@ void LibraryView::setPlaybackReturnEpisode(const std::string& itemId, int episod
     }
 }
 
+void LibraryView::noteLocalPlayState(const std::string& itemId, long long posTicks,
+                                     long long runTicks) {
+    // Same rules Jellyfin applies to a stop report (default resume settings):
+    // under 5% clears the resume point, over 90% marks watched.
+    if (runTicks <= 0) return;
+    long long pct = posTicks * 100 / runTicks;
+    bool played = pct >= 90;
+    long long pos = (pct < 5 || played) ? 0 : posTicks;
+    auto apply = [&](auto& list) {
+        for (auto& it : list)
+            if (it.id == itemId) {
+                if (played) it.played = true;
+                it.playbackPositionTicks = pos;
+            }
+    };
+    apply(episodes);
+    apply(items);
+    apply(searchResults);
+}
+
 void LibraryView::loadContinueWatching() {
     freeCWTextures();
     continueItems.clear();

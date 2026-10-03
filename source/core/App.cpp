@@ -465,8 +465,9 @@ static bool runPlaySession(JellyfinClient& client,
              * investigation -- the tradeoff is a frozen (non-animating)
              * spinner during a slow report, not a suspected hang. */
             if (!willRetry && !isTrackSwitch && !isHomeSuspend && positionTicks > 0) {
-                client.reportPlaybackStopped(serverUrl, auth, itemId, mediaSourceId,
-                                             playSessionId, positionTicks);
+                if (client.reportPlaybackStopped(serverUrl, auth, itemId, mediaSourceId,
+                                                 playSessionId, positionTicks))
+                    lv.noteLocalPlayState(itemId, positionTicks, runtimeTicks);
             }
             if (!isHomeSuspend)
                 client.deleteActiveEncoding(serverUrl, auth, playSessionId);

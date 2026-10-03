@@ -58,6 +58,8 @@ public:
     // Return to the episode that played last (autoplay/next may have moved
     // past the one playback started on). Call before reinitAfterPlayback().
     void setPlaybackReturnEpisode(const std::string& itemId, int episodeIdx);
+    // Mirror a successful stop report into cached lists so they don't need a refetch.
+    void noteLocalPlayState(const std::string& itemId, long long posTicks, long long runTicks);
 
     std::string pendingPlayUrl;           // set before returning true when the user hits Play
     std::string pendingPlayItemId;        // Jellyfin item id for /Sessions/Playing reporting
