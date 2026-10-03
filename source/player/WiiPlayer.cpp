@@ -780,35 +780,35 @@ void wii_player_vol_down(void)
     g_wiifin_vol_delta = -1;
 }
 
-void wii_player_request_next(void)
+/* First request wins. MPlayer takes a second or two to notice a stop, and
+ * the overlay keeps taking input meanwhile; a second press (e.g. B right
+ * after a subtitle switch) used to overwrite the reason, so the track switch
+ * ran the full end-of-playback path instead. */
+void wii_player_request_stop(int reason)
 {
-    g_player_stop_reason = PLAYER_STOP_NEXT;
+    if (async_quit_request) {
+        DebugLog::Log("request_stop(%d) ignored -- reason=%d already pending",
+                      reason, (int)g_player_stop_reason);
+        return;
+    }
+    g_player_stop_reason = reason;
     async_quit_request   = 1;
 }
 
-void wii_player_request_prev(void)
-{
-    g_player_stop_reason = PLAYER_STOP_PREV;
-    async_quit_request   = 1;
-}
-
-void wii_player_request_audio_switch(void)
-{
-    g_player_stop_reason = PLAYER_STOP_AUDIO;
-    async_quit_request   = 1;
-}
-
-void wii_player_request_sub_switch(void)
-{
-    g_player_stop_reason = PLAYER_STOP_SUB;
-    async_quit_request   = 1;
-}
+void wii_player_request_next(void) { wii_player_request_stop(PLAYER_STOP_NEXT); }
+void wii_player_request_prev(void) { wii_player_request_stop(PLAYER_STOP_PREV); }
+void wii_player_request_audio_switch(void) { wii_player_request_stop(PLAYER_STOP_AUDIO); }
+void wii_player_request_sub_switch(void) { wii_player_request_stop(PLAYER_STOP_SUB); }
 
 void wii_player_request_seek(float targetSeconds)
 {
+    if (async_quit_request) {
+        DebugLog::Log("request_seek ignored -- reason=%d already pending",
+                      (int)g_player_stop_reason);
+        return;
+    }
     g_wiifin_scrub_target_secs = targetSeconds;
-    g_player_stop_reason       = PLAYER_STOP_SCRUB;
-    async_quit_request         = 1;
+    wii_player_request_stop(PLAYER_STOP_SCRUB);
 }
 
 /* -----------------------------------------------------------------------

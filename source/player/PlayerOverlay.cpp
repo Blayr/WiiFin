@@ -565,9 +565,8 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
      * overlay. Checked before the Hidden-state handling below so it always
      * works regardless of overlay visibility. */
     if (btnsDown & WPAD_BUTTON_HOME) {
-        g_wiifin_stopping    = 1;
-        g_player_stop_reason = PLAYER_STOP_HOME;
-        wii_player_stop();
+        g_wiifin_stopping = 1;
+        wii_player_request_stop(PLAYER_STOP_HOME);
         return;
     }
 
@@ -601,9 +600,8 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
      * with no effect while hidden. */
     if (state == State::Hidden) {
         if (btnsDown & WPAD_BUTTON_B) {
-            g_wiifin_stopping    = 1;
-            g_player_stop_reason = PLAYER_STOP_EOF;
-            wii_player_stop();
+            g_wiifin_stopping = 1;
+            wii_player_request_stop(PLAYER_STOP_EOF);
             return;
         }
         if (btnsDown & WPAD_BUTTON_A) {

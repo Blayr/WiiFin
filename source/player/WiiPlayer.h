@@ -170,6 +170,10 @@ void wii_player_seek_abs(float seconds);
 void wii_player_seek_rel(float delta);
 void wii_player_vol_up(void);
 void wii_player_vol_down(void);
+
+/* Stop the session for a PLAYER_STOP_* reason. First request wins: a no-op
+ * while a stop is already pending. Use this, not g_player_stop_reason. */
+void wii_player_request_stop(int reason);
 void wii_player_request_next(void);
 void wii_player_request_prev(void);
 void wii_player_request_audio_switch(void);
