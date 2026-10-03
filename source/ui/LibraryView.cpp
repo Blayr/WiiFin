@@ -2323,6 +2323,7 @@ bool LibraryView::update(ir_t& ir) {
                 pendingPlaySessionId = playSessionId;
                 pendingPlayStartTimeTicks = startTicks;
                 pendingPlayRuntimeTicks  = detail.runtimeTicks;
+                pendingPlayTitle         = playbackTitle(detail);
                 // Audio / subtitle stream lists for in-player track switching
                 pendingPlayAudioStreams = detail.audioStreams;
                 pendingPlaySubStreams   = detail.subtitleStreams;
@@ -2481,6 +2482,7 @@ bool LibraryView::update(ir_t& ir) {
                 pendingPlaySessionId      = playSessionId;
                 pendingPlayStartTimeTicks = startTicks;
                 pendingPlayRuntimeTicks   = detail.runtimeTicks;
+                pendingPlayTitle          = playbackTitle(detail);
                 pendingPlayAudioStreams    = detail.audioStreams;
                 pendingPlaySubStreams      = detail.subtitleStreams;
                 pendingPlayAudioIdx = (detailAudioSel < (int)detail.audioStreams.size())

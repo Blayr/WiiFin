@@ -1629,6 +1629,9 @@ bool JellyfinClient::getItemDetail(const std::string& serverUrl,
 
     out.id                    = jsonGetString(resp, "Id");
     out.name                  = jsonGetString(resp, "Name");
+    out.seriesName            = jsonGetString(resp, "SeriesName");
+    out.seasonNumber          = jsonGetInt(resp,    "ParentIndexNumber");
+    out.episodeNumber         = jsonGetInt(resp,    "IndexNumber");
     out.overview              = jsonGetString(resp, "Overview");
     out.officialRating        = jsonGetString(resp, "OfficialRating");
     out.year                  = jsonGetInt(resp,    "ProductionYear");

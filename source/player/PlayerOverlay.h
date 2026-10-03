@@ -14,6 +14,10 @@ struct PlayerOverlayContext {
     int                          episodeIdx; /* index of the currently-playing ep */
     std::string                  episodeTitle;
 
+    /* HUD title (movie name, or "Series\nS1E3 - Episode") -- drawn in the
+     * top-left of the GC-pad native controls. */
+    std::string title;
+
     /* Media streams (audio + subtitle tracks available for the item) */
     std::vector<MediaStream> audioStreams;
     std::vector<MediaStream> subStreams;
@@ -93,12 +97,17 @@ private:
      * safely perform pause/seek itself instead of deferring to ov_tick. */
     bool nativeMode = false;
 
-    /* nativeMode-only: index (0-5) of the focused icon in the native
-     * control row -- Prev/-10s/Play-Pause/+10s/Next/Help -- moved with
+    /* ctx.title folded to printable ASCII (the 5x7 pixel font has no
+     * glyphs past 0x7E) -- computed once in the constructor rather than
+     * per frame. */
+    std::string titleAscii;
+
+    /* nativeMode-only: index (0-3) of the focused icon in the native
+     * control row -- Prev/Play-Pause/Next/Help -- moved with
      * Left/Right, activated with A. Non-native (Wiimote/IR) sessions don't
      * use this; their Left/Right stays a direct seek shortcut, matching
      * vo_gx.c's own hover+click model. */
-    int mainFocus = 2; /* default to Play/Pause, the most-used action */
+    int mainFocus = 1; /* default to Play/Pause, the most-used action */
 
     /* nativeMode-only: progress-bar scrubbing, entered via Down from the
      * icon row. While true, Left/Right move a pending seek target

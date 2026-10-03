@@ -62,6 +62,7 @@ public:
     std::string pendingPlaySessionId;     // PlaySessionId from PlaybackInfo (for progress reporting)
     long long   pendingPlayStartTimeTicks = 0; // seek offset passed to the transcoder (100-ns ticks)
     long long   pendingPlayRuntimeTicks  = 0; // RunTimeTicks from Jellyfin (for progress bar duration)
+    std::string pendingPlayTitle;         // HUD title (see playbackTitle())
 
     // Music play request (set when returning true from a music library)
     bool                              pendingPlayIsMusic  = false;

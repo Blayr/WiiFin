@@ -52,6 +52,9 @@ struct MediaStream {
 struct JellyfinItemDetail {
     std::string id;
     std::string name;
+    std::string seriesName;    // episodes only; empty for movies
+    int         seasonNumber  = 0; // ParentIndexNumber (episodes only)
+    int         episodeNumber = 0; // IndexNumber (episodes only)
     std::string overview;      // synopsis
     std::string officialRating;
     int         year                  = 0;
@@ -62,6 +65,17 @@ struct JellyfinItemDetail {
     std::vector<MediaStream>    audioStreams;    // audio tracks
     std::vector<MediaStream>    subtitleStreams; // subtitle tracks
 };
+
+// Title shown in the in-player HUD: "Series\nS1E3 - Episode" for
+// episodes (two lines), plain name for movies.
+inline std::string playbackTitle(const JellyfinItemDetail& d) {
+    if (d.seriesName.empty()) return d.name;
+    std::string ep;
+    if (d.episodeNumber > 0)
+        ep = "S" + std::to_string(d.seasonNumber) + "E" + std::to_string(d.episodeNumber);
+    if (!d.name.empty()) ep += (ep.empty() ? "" : " - ") + d.name;
+    return ep.empty() ? d.seriesName : d.seriesName + "\n" + ep;
+}
 
 struct JellyfinAudioItem {
     std::string id;

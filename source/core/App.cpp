@@ -194,6 +194,7 @@ static bool runPlaySession(JellyfinClient& client,
     /* Known duration from Jellyfin metadata — used as g_wiifin_known_duration
      * to drive the progress bar when the MPEG-TS demuxer returns 0 for length. */
     long long runtimeTicks   = lv.pendingPlayRuntimeTicks;
+    std::string title        = lv.pendingPlayTitle;
 
     /* Capture BGM state ONCE before any play session in this call.
      * Must not be re-captured inside the outer loop: after a track switch
@@ -227,6 +228,7 @@ static bool runPlaySession(JellyfinClient& client,
         ctx.selectedSub   = subIdx;
         if (!episodes.empty() && episodeIdx < (int)episodes.size())
             ctx.episodeTitle = episodes[episodeIdx].name;
+        ctx.title        = title;
 
         /* Try to fetch intro timestamps (for TV episodes) */
         if (!episodes.empty()) {
@@ -555,6 +557,7 @@ static bool runPlaySession(JellyfinClient& client,
             subIdx         = -1;
             startTimeTicks = 0;  /* new episode: start from beginning */
             runtimeTicks   = nextDetail.runtimeTicks;  /* update known duration */
+            title          = playbackTitle(nextDetail);
             continue;
         }
 

@@ -228,6 +228,42 @@ PlayerOverlay* PlayerOverlay::instance = nullptr;
 /* -----------------------------------------------------------------------
  * Construction
  * ----------------------------------------------------------------------- */
+/* UTF-8 -> printable ASCII for the pixel font: Latin-1 accented letters
+ * lose their accent, curly quotes/dashes become their ASCII forms,
+ * anything else non-ASCII is dropped. '\n' is kept as a line break. */
+static std::string foldToAscii(const std::string& in)
+{
+    static const char kLatin1[] =  /* U+00C0..U+00FF */
+        "AAAAAAACEEEEIIII" "DNOOOOOxOUUUUYTs"
+        "aaaaaaaceeeeiiii" "dnooooo/ouuuuyty";
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ) {
+        unsigned char c = (unsigned char)in[i];
+        if (c < 0x80) {
+            if ((c >= 0x20 && c <= 0x7E) || c == '\n') out += (char)c;
+            i++;
+            continue;
+        }
+        int len = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+        if (i + len > in.size()) break;
+        unsigned char c1 = (unsigned char)in[i + 1];
+        if (len == 2 && c == 0xC3 && c1 >= 0x80 && c1 <= 0xBF) {
+            out += kLatin1[c1 - 0x80];
+        } else if (len == 2 && c == 0xC2 && c1 == 0xA0) {
+            out += ' ';
+        } else if (len == 3 && c == 0xE2 && c1 == 0x80) {
+            unsigned char c2 = (unsigned char)in[i + 2];
+            if (c2 == 0x98 || c2 == 0x99)      out += '\'';
+            else if (c2 == 0x9C || c2 == 0x9D) out += '"';
+            else if (c2 == 0x93 || c2 == 0x94) out += '-';
+            else if (c2 == 0xA6)               out += "...";
+        }
+        i += len;
+    }
+    return out;
+}
+
 PlayerOverlay::PlayerOverlay(PlayerOverlayContext& c) : ctx(c)
 {
     instance = this;
@@ -240,6 +276,8 @@ PlayerOverlay::PlayerOverlay(PlayerOverlayContext& c) : ctx(c)
     subPickSel = 0; /* 0 = "None" in the sub list */
     for (int i = 0; i < (int)ctx.subStreams.size(); ++i)
         if (ctx.subStreams[i].index == ctx.currentSub) { subPickSel = i + 1; break; }
+
+    titleAscii = foldToAscii(ctx.title);
 
     /* Starts hidden (State::Hidden is the default member initializer) --
      * any button or IR movement reveals it, per the Hidden-state handling
@@ -286,7 +324,7 @@ void PlayerOverlay::activateMain()
 {
     state      = State::Main;
     hideTimer  = 150; /* 5 s at ~30 Hz */
-    mainFocus  = 2;   /* Play/Pause -- most-used action, native icon row only */
+    mainFocus  = 1;   /* Play/Pause -- most-used action, native icon row only */
     barFocused = false;
 }
 
@@ -601,7 +639,7 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
 
         if (nativeMode) {
             /* Native icon row (see drawNativeControls): Left/Right move
-             * focus between 6 icons -- Prev/-10s/Play-Pause/+10s/Next/Help
+             * focus between 4 icons -- Prev/Play-Pause/Next/Help
              * -- A activates the focused one. vo_gx.c never sees GC input,
              * so it's always safe to act on these directly (no ov_tick
              * double-handling risk, unlike the legacy Wiimote/IR branch
@@ -611,8 +649,8 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
              * Down now opens the scrub bar above instead, so volume only
              * moves to the icon row's Up/Down when nothing else claims it
              * -- it's still reachable via the Hidden-state GC shortcuts. */
-            if (btnsDown & WPAD_BUTTON_LEFT)  { mainFocus = (mainFocus + 5) % 6; hideTimer = 150; }
-            if (btnsDown & WPAD_BUTTON_RIGHT) { mainFocus = (mainFocus + 1) % 6; hideTimer = 150; }
+            if (btnsDown & WPAD_BUTTON_LEFT)  { mainFocus = (mainFocus + 3) % 4; hideTimer = 150; }
+            if (btnsDown & WPAD_BUTTON_RIGHT) { mainFocus = (mainFocus + 1) % 4; hideTimer = 150; }
 
             if (btnsDown & WPAD_BUTTON_A) {
                 if (introPromptShown && ctx.intro.hasIntro && !g_mplayer_paused) {
@@ -624,23 +662,15 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
                     if (ctx.episodeIdx > 0) wii_player_request_prev();
                     else showOSD("No previous episode", 2000);
                     break;
-                case 1: /* Seek -10 s */
-                    wii_player_seek_rel(-10.0f);
-                    refreshTimeOSD(timePos - 10.0f, paused);
-                    break;
-                case 2: /* Play/Pause */
+                case 1: /* Play/Pause */
                     wii_player_pause_toggle();
                     break;
-                case 3: /* Seek +10 s */
-                    wii_player_seek_rel(+10.0f);
-                    refreshTimeOSD(timePos + 10.0f, paused);
-                    break;
-                case 4: /* Next episode */
+                case 2: /* Next episode */
                     if ((int)ctx.episodeIdx + 1 < (int)ctx.episodes.size())
                         wii_player_request_next();
                     else showOSD("No next episode", 2000);
                     break;
-                case 5: /* Help */
+                case 3: /* Help */
                     activateHelp();
                     return;
                 }
@@ -830,7 +860,7 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
     case State::Help: {
         if ((btnsDown & WPAD_BUTTON_B) || (btnsDown & WPAD_BUTTON_A)) {
             /* Return to Main without activateMain()'s mainFocus reset --
-             * focus was already sitting on the "?" icon (mainFocus == 5)
+             * focus was already sitting on the "?" icon (mainFocus == 3)
              * when Help was opened, so leaving it alone means closing
              * Help lands back on "?" instead of jumping to Play/Pause. */
             state     = State::Main;
@@ -958,8 +988,67 @@ static void drawTextBoxScaled(uint8_t* Y, int W, int H, int x, int y,
     drawTextScaled(Y, W, x, y, text, textVal, scale);
 }
 
+/* VCR-style transport icons for the native icon row, centred on (cx, cy):
+ * Play ">", Pause "||", Prev "|<", Next ">|". Drawn from filled spans
+ * rather than font glyphs so they read as icons, not text. */
+enum class VcrIcon { Play, Pause, Prev, Next };
+
+static void fillRectY(uint8_t* Y, int W, int x0, int y0, int w, int h, uint8_t val)
+{
+    for (int y = y0; y < y0 + h; y++)
+        for (int x = x0; x < x0 + w; x++)
+            setYpix(Y, W, x, y, val);
+}
+
+/* Solid triangle IH rows tall and TW columns wide, apex pointing right
+ * (or left if !right), top-left corner at (x0, y0). */
+static const int VCR_IH   = 13;  /* icon height (odd, so the apex is one row) */
+static const int VCR_TW   = 10;  /* triangle width */
+static const int VCR_BAR  = 3;   /* Prev/Next end-bar width */
+
+static void fillTriangleY(uint8_t* Y, int W, int x0, int y0, bool right, uint8_t val)
+{
+    const int half = VCR_IH / 2;
+    for (int r = 0; r < VCR_IH; r++) {
+        int dist = r < half ? half - r : r - half;
+        int w    = (half + 1 - dist) * VCR_TW / (half + 1);
+        int xs   = right ? x0 : x0 + VCR_TW - w;
+        fillRectY(Y, W, xs, y0 + r, w, 1, val);
+    }
+}
+
+static void drawVcrIcon(uint8_t* Y, int W, int cx, int cy, VcrIcon icon, uint8_t val)
+{
+    const int y0 = cy - VCR_IH / 2;
+    switch (icon) {
+    case VcrIcon::Play:
+        fillTriangleY(Y, W, cx - VCR_TW / 2, y0, true, val);
+        break;
+    case VcrIcon::Pause: {
+        const int barW = 4, gap = 4;
+        int x0 = cx - (2 * barW + gap) / 2;
+        fillRectY(Y, W, x0, y0, barW, VCR_IH, val);
+        fillRectY(Y, W, x0 + barW + gap, y0, barW, VCR_IH, val);
+        break;
+    }
+    case VcrIcon::Prev: {
+        int x0 = cx - (VCR_BAR + VCR_TW) / 2;
+        fillRectY(Y, W, x0, y0, VCR_BAR, VCR_IH, val);
+        fillTriangleY(Y, W, x0 + VCR_BAR, y0, false, val);
+        break;
+    }
+    case VcrIcon::Next: {
+        int x0 = cx - (VCR_BAR + VCR_TW) / 2;
+        fillTriangleY(Y, W, x0, y0, true, val);
+        fillRectY(Y, W, x0 + VCR_TW, y0, VCR_BAR, VCR_IH, val);
+        break;
+    }
+    }
+}
+
 static void drawNativeControls(uint8_t* Y, int W, int H, int focusIdx,
-                                 bool barFocused, float scrubPos)
+                                 bool barFocused, float scrubPos,
+                                 const std::string& title)
 {
     int   paused = g_mplayer_paused;
     /* g_mplayer_time_pos resets to 0 at the start of every transcode session
@@ -973,26 +1062,38 @@ static void drawNativeControls(uint8_t* Y, int W, int H, int focusIdx,
      * are tuned for vo_gx's own drawing, not ours): a real CRT commonly
      * overscans/crops several percent off every edge. Stack rows bottom-up
      * from a safe margin instead of an absolute Y. */
-    const int marginX   = W / 14;
-    const int marginBot = H / 10;
+    const int marginX   = W / 24;
+    const int marginBot = H / 20;
+    const int marginTop = H / 20;
     const int scale     = 2;
-    const int textPad   = 5;
+    const int textPad   = 4;
     const int timeRowH  = 7 * scale + 2 * textPad;
-    const int rowGap    = 14;
-    const int barH      = 10;
+    const int rowGap    = 8;
+    const int barH      = 8;
 
     /* Button width/gap are derived from available width, not fixed pixel
      * constants -- W is no longer always 848 now that Settings can request
      * a reduced transcode resolution (see JellyfinClient::videoResMode). A
      * fixed btnW sized for 848 went negative at 480 (6*82 + 5*14 = 632 >
      * 480 - 2*marginX), wrapping the row around the texture. */
-    const int nBtn      = 6; /* Prev, -10s, Play/Pause, +10s, Next, Help(?) */
-    const int btnH      = 56;
+    /* The three VCR-style transport buttons (|<  > / ||  >|) are
+     * equal-width and centred on the screen, so Play/Pause sits dead
+     * centre; the "?" help button is a narrow square pinned to the right
+     * margin. Button width is capped (icons don't need the full row) but
+     * still shrinks to fit at reduced transcode resolutions, reserving
+     * the same width on the left as "?" takes on the right. */
+    const int nBtn      = 4; /* Prev, Play/Pause, Next, Help(?) */
+    const int nMain     = 3;
+    const int btnH      = 24;
     const int availW    = W - 2 * marginX;
     const int btnGap    = availW / 60;
-    const int btnW      = (availW - (nBtn - 1) * btnGap) / nBtn;
-    const int totalBtnW = nBtn * btnW + (nBtn - 1) * btnGap;
-    const int btnX0     = (W - totalBtnW) / 2;
+    const int helpW     = btnH;
+    const int mainAvail = availW - 2 * (helpW + btnGap);
+    const int btnWFit   = (mainAvail - (nMain - 1) * btnGap) / nMain;
+    const int btnW      = btnWFit < 3 * btnH ? btnWFit : 3 * btnH;
+    const int mainTotal = nMain * btnW + (nMain - 1) * btnGap;
+    const int btnX0     = (W - mainTotal) / 2;
+    const int helpX0    = W - marginX - helpW;
 
     int cursorY = H - marginBot;
     cursorY -= timeRowH;
@@ -1003,6 +1104,32 @@ static void drawNativeControls(uint8_t* Y, int W, int H, int focusIdx,
     cursorY -= rowGap;
     cursorY -= btnH;
     int btnY0 = cursorY, btnY1 = btnY0 + btnH - 1;
+
+    /* Title, top-left inside the same safe margins -- one box per '\n'-
+     * separated line (series, then "S1E3 - Episode"), stacked so the boxes
+     * abut. Each line is truncated with "..." if it would run past the
+     * right margin. */
+    if (!title.empty()) {
+        const int maxTitleW = W - 2 * marginX - 2 * textPad;
+        const int linePitch = 7 * scale + 2 * textPad;
+        int lineY = marginTop + textPad;
+        size_t start = 0;
+        while (start <= title.size()) {
+            size_t nl = title.find('\n', start);
+            std::string t = title.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+            if (textWidthScaled(t.c_str(), scale) > maxTitleW) {
+                while (!t.empty() && textWidthScaled((t + "...").c_str(), scale) > maxTitleW)
+                    t.pop_back();
+                t += "...";
+            }
+            if (!t.empty())
+                drawTextBoxScaled(Y, W, H, marginX + textPad, lineY,
+                                  t.c_str(), 235, 20, scale, textPad);
+            lineY += linePitch;
+            if (nl == std::string::npos) break;
+            start = nl + 1;
+        }
+    }
 
     /* Progress bar -- a couple pixels taller and brighter-bordered while
      * scrubbing so it's obvious focus has moved off the icon row. */
@@ -1056,29 +1183,32 @@ static void drawNativeControls(uint8_t* Y, int W, int H, int focusIdx,
 
     /* Icon row -- Left/Right moves focus (see State::Main's nativeMode
      * branch), A activates the focused icon. Focused icon drawn inverted
-     * (bright fill / dark text) so it's obvious which one A will trigger. */
-    static const char* kLabel[nBtn] = { "PREV", "-10s", nullptr, "+10s", "NEXT", "?" };
-    /* "PAUSE" is the widest label -- drop to 1x text if btnW is too small
-     * to fit it at 2x (only realistic at the smallest Reduced resolution). */
-    int btnScale = (textWidthScaled("PAUSE", 2) + 8 <= btnW) ? 2 : 1;
+     * (bright fill / dark icon) so it's obvious which one A will trigger. */
     for (int i = 0; i < nBtn; i++) {
-        int bx0 = btnX0 + i * (btnW + btnGap);
-        int bx1 = bx0 + btnW - 1;
+        int bw  = (i < nMain) ? btnW : helpW;
+        int bx0 = (i < nMain) ? btnX0 + i * (btnW + btnGap) : helpX0;
+        int bx1 = bx0 + bw - 1;
         bool sel = !barFocused && (i == focusIdx); /* focus moved to the bar */
         uint8_t bg = sel ? 220 : 55;
         for (int y = btnY0; y <= btnY1; y++)
             for (int x = bx0; x <= bx1; x++)
                 setYpix(Y, W, x, y, bg);
-        const char* label = (i == 2) ? (paused ? "PLAY" : "PAUSE") : kLabel[i];
-        int tw = textWidthScaled(label, btnScale);
-        int tx = bx0 + (btnW - tw) / 2;
-        int ty = btnY0 + (btnH - 7 * btnScale) / 2;
         uint8_t fg = sel ? 20 : 225;
-        drawTextScaled(Y, W, tx, ty, label, fg, btnScale);
+        int cx = bx0 + bw / 2, cy = btnY0 + btnH / 2;
+        switch (i) {
+        case 0: drawVcrIcon(Y, W, cx, cy, VcrIcon::Prev, fg); break;
+        case 1: drawVcrIcon(Y, W, cx, cy, paused ? VcrIcon::Play : VcrIcon::Pause, fg); break;
+        case 2: drawVcrIcon(Y, W, cx, cy, VcrIcon::Next, fg); break;
+        case 3: {
+            int tw = textWidthScaled("?", 2);
+            drawTextScaled(Y, W, cx - tw / 2, cy - 7, "?", fg, 2);
+            break;
+        }
+        }
     }
 }
 
-/* Full-panel shortcut reference, opened via the "?" icon (focus index 5).
+/* Full-panel shortcut reference, opened via the "?" icon (focus index 3).
  * "Takes up most of the screen" per design: a large centred panel, one row
  * per control. */
 static void drawHelpScreen(uint8_t* Y, int W, int H)
@@ -1337,7 +1467,8 @@ void PlayerOverlay::onFrame(uint8_t* Ytex, int Ywidth, int Yheight)
          * so never draws for us -- own the drawing ourselves. */
         if (self->state == State::Main) {
             drawNativeControls(Ytex, Ywidth, Yheight, self->mainFocus,
-                                self->barFocused, self->scrubPos);
+                                self->barFocused, self->scrubPos,
+                                self->titleAscii);
         } else if (self->state == State::Help) {
             drawHelpScreen(Ytex, Ywidth, Yheight);
         } else if (self->state == State::AudioPick) {
