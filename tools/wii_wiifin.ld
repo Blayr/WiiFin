@@ -56,6 +56,10 @@ SECTIONS {
                 *(SORT(.text.sorted.*))
                 *(.text .iplt .stub .text.* .gnu.linkonce.t.*)
                 KEEP( *(SORT_NONE(.fini)) )
+                /* Pad the segment's size to 32 bytes: newer Dolphin refuses
+                 * a DOL whose section sizes aren't 32-byte multiples ("Text
+                 * section 0 is not 32-byte aligned"). HBC doesn't care. */
+                . = ALIGN(32);
         } :text = 0
 
         . = ALIGN(32);
@@ -129,6 +133,7 @@ SECTIONS {
                 *(.sdata .sdata.* .gnu.linkonce.s.*)
                 *(.lit8)
                 *(.lit4)
+                . = ALIGN(32); /* last :data section -- see .text's note */
         } :data = 0
 
         /* ------------------------------------------------------------------ */
@@ -162,6 +167,7 @@ SECTIONS {
                 *cacert_pem.o(.data .data.*)
                 *music_mp3.o(.data .data.*)
                 *stub_zone.o(.stub_zone)
+                . = ALIGN(32); /* see .text's note */
         } :text2 = 0
 
         . = ADDR(.data.blobs) + SIZEOF(.data.blobs);

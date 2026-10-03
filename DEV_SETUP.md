@@ -178,6 +178,51 @@ Three config gotchas hit getting Wiimote input actually working, all in
   Wiimote** causes input contention — set GC ports to "None"
   (`SIDevice0..3 = 0` in `Dolphin.ini`) unless actually testing GC input.
 
+### `tools/dev/run-dolphin.sh`
+
+Boots a build with everything video playback needs, collects the logs, and
+sets up a GameCube controller. The header comment in the script is the full
+reference; the short version:
+
+```bash
+tools/dev/run-dolphin.sh            # boot ./WiiFin.dol (-r rebuilds first)
+STRICT=1 tools/dev/run-dolphin.sh   # MMU emulation: bad memory accesses fault like on a Wii
+DEBUG=1  tools/dev/run-dolphin.sh   # Dolphin's debugger UI
+GDB=1    tools/dev/run-dolphin.sh   # GDB stub on :2345, then tools/dev/dolphin-gdb.sh start
+```
+
+Hard requirements found along the way (the script checks or sets each one):
+
+1. **Dolphin's `Load/` folder must be writable.** Dolphin creates the
+   virtual SD card there. If it can't, Dolphin itself segfaults as soon as
+   WiiFin touches storage.
+2. **DOL section sizes must be multiples of 32 bytes.** Newer Dolphin
+   refuses anything else ("Failed to init core" / "Could not boot the
+   specified file"). `tools/wii_wiifin.ld` pads the sections; HBC on a real
+   Wii doesn't mind.
+3. **LLE audio (`DSPHLE=False`) for playback.** MPlayer's audio goes
+   through libaesnd, whose DSP microcode Dolphin's HLE audio doesn't run.
+4. **`CPUThread` + `SyncGPU` on, `DeferEFBCopies` off for playback.**
+   Otherwise Dolphin never raises the draw-done interrupt for MPlayer's
+   frames, so you get a black screen and no audio.
+
+Logs land in `build/dolphin-last.log` (every `SYS_Report` line, which is
+invisible on real hardware without a USB Gecko, plus Dolphin's own
+memory/GPU warnings) and `build/dolphin-wiifin.log` (WiiFin's debug log, if
+the Debug Log File setting is on). To start logged in, put a `wiifin.cfg`
+from the Wii's SD card into Dolphin's `Load/WiiSDSync/apps/WiiFin/`. It
+contains an access token, so it stays out of this repo.
+
+`tools/dev/dolphin-gdb.sh` keeps one gdb session attached to Dolphin's GDB
+stub (the stub accepts a single connection), so a frozen run can be paused
+and inspected: registers, backtraces with symbols, libogc globals.
+
+**Dolphin is not a real Wii.** It starts with zeroed RAM (a real Wii boots
+with whatever the Homebrew Channel left behind) and is more forgiving of
+bad GPU commands and DMA timing. Bugs found in Dolphin are real, but a clean
+Dolphin run doesn't clear a build for hardware. See `docs/bugs/` for cases
+of both.
+
 ## Deploying to real hardware over the network (wiiload)
 
 No SD card swap needed. `wiiload` isn't packaged anywhere reachable from
@@ -222,3 +267,5 @@ tools/dev/bin/wiiload WiiFin.dol      # HBC receives it and launches immediately
 | `tools/dev/docker-shell.sh` | Interactive shell in the build container, for debugging build issues by hand |
 | `tools/dev/bin/wiiload` | Host binary, sends a `.dol` to a Wii running HBC over the network (see above); gitignored, rebuild per machine |
 | `tools/dev/throttle_proxy.py` | Root-free TCP proxy that rate-limits + logs traffic between WiiFin and the real Jellyfin server, to approximate real Wii wifi speeds when testing in Dolphin (`--help` for usage) |
+| `tools/dev/run-dolphin.sh` | Boots a build in Dolphin with playback settings, GC pad and log collection (see "Testing in Dolphin") |
+| `tools/dev/dolphin-gdb.sh` | Persistent gdb session attached to Dolphin's GDB stub, for inspecting a paused/frozen run |
