@@ -86,3 +86,9 @@ bool Input::isBPressed()     { return buttonsDown & WPAD_BUTTON_B; }
 bool Input::isBackPressed()  { return buttonsDown & WPAD_BUTTON_B; }
 bool Input::isLPressed()     { return buttonsDown & WPAD_BUTTON_MINUS; }
 bool Input::isRPressed()     { return buttonsDown & WPAD_BUTTON_PLUS; }
+
+int Input::gcCStickHeldX() {
+    s8 x = PAD_SubStickX(PAD_CHAN0);
+    const s8 DEADZONE = 60;
+    return (x > DEADZONE) ? 1 : ((x < -DEADZONE) ? -1 : 0);
+}

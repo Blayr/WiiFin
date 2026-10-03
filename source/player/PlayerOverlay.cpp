@@ -406,6 +406,36 @@ void PlayerOverlay::adjustVolume(int delta)
     volIndicatorTimer = 60; /* ~2 s at the ~30 Hz bgThread tick rate */
 }
 
+void PlayerOverlay::adjustAudioDelayNotch(int dir)
+{
+    const float kStep = 0.05f;
+    const float kMinDelay = -2.0f, kMaxDelay = 2.0f;
+
+    float current = g_wiifin_audio_delay_secs + delayPendingDeltaSecs;
+    float target   = current + (dir > 0 ? kStep : -kStep);
+    if (target < kMinDelay) target = kMinDelay;
+    if (target > kMaxDelay) target = kMaxDelay;
+    if (target == current) return; /* already at the limit */
+
+    delayPendingDeltaSecs = target - g_wiifin_audio_delay_secs;
+    /* Refreshed on every notch; flushPendingAudioDelay() sends once it lapses. */
+    delayApplyDeadlineMs = (uint32_t)ticks_to_millisecs(gettime()) + 400;
+
+    int ms = (int)lroundf(target * 1000.0f);
+    snprintf(delayIndicatorText, sizeof(delayIndicatorText), "A/V Delay: %+dms", ms);
+    delayIndicatorTimer = 60; /* ~2s at the ~30 Hz bgThread tick rate, matches volIndicatorTimer */
+}
+
+void PlayerOverlay::flushPendingAudioDelay()
+{
+    if (delayPendingDeltaSecs == 0.0f) return;
+    if ((uint32_t)ticks_to_millisecs(gettime()) < delayApplyDeadlineMs)
+        return; /* still within the idle window -- wait for more input */
+
+    wii_player_audio_delay_adjust(delayPendingDeltaSecs);
+    delayPendingDeltaSecs = 0.0f;
+}
+
 void PlayerOverlay::showBitrateIndicator(int kbps, int resW, int resH)
 {
     // Describes this specific bitrate choice, not a claim about the
@@ -445,11 +475,13 @@ void PlayerOverlay::updateIntroPrompt(float timePos)
  * tick() — called ~30 Hz from the background LWP thread
  * ----------------------------------------------------------------------- */
 void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t btnsHeld,
-                         float irX, float irY, bool irValid, uint32_t gcDown)
+                         float irX, float irY, bool irValid, uint32_t gcDown,
+                         int gcCStickX)
 {
     (void)btnsHeld; /* reserved for hold-to-seek in the future */
 
     if (volIndicatorTimer > 0) --volIndicatorTimer;
+    if (delayIndicatorTimer > 0) --delayIndicatorTimer;
 
     /* If the GX overlay (vo_gx.c) already handled buttons this frame,
      * drop them from btnsDown so we don't double-fire actions.
@@ -505,6 +537,20 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
         g_player_stop_reason = PLAYER_STOP_HOME;
         wii_player_stop();
         return;
+    }
+
+    /* GC C-stick: live A/V delay nudge in any overlay state (only the GC pad
+     * produces gcCStickX, so no nativeMode gate). Hold to repeat. */
+    {
+        static const uint32_t kDelayNotchIntervalMs = 333; /* ~3/sec */
+        if (gcCStickX != 0) {
+            uint32_t nowMs = (uint32_t)ticks_to_millisecs(gettime());
+            if (nowMs >= delayNextNotchMs) {
+                adjustAudioDelayNotch(gcCStickX);
+                delayNextNotchMs = nowMs + kDelayNotchIntervalMs;
+            }
+        }
+        flushPendingAudioDelay();
     }
 
     /* While hidden: A reveals the overlay. Left/Right/etc are deliberately
@@ -1223,6 +1269,7 @@ static void drawHelpScreen(uint8_t* Y, int W, int H)
         { "  A/B",    "Confirm seek / cancel back to icons" },
         { "Dpad L/R", "Seek -10s/+10s (menu hidden)" },
         { "Dpad Up",  "Volume up" },
+        { "C-Stick L/R", "A/V delay -50ms / +50ms (hold to repeat)" },
         { "L / R",    "Previous / Next episode" },
         { "X",        "Audio track" },
         { "Y",        "Subtitles" },
@@ -1302,6 +1349,30 @@ static void drawBitrateIndicator(uint8_t* Y, int W, int H, const char* text)
     int px1 = px0 + panelW;
     int py0 = marginTop;
     int py1 = py0 + panelH;
+
+    for (int y = py0; y <= py1; y++)
+        for (int x = px0; x <= px1; x++)
+            setYpix(Y, W, x, y, 20);
+
+    drawTextScaled(Y, W, px0 + pad, py0 + pad, text, 230, scale);
+}
+
+/* Bottom-left A/V-delay toast (bottom, so it can't overlap the bitrate toast). */
+static void drawDelayIndicator(uint8_t* Y, int W, int H, const char* text)
+{
+    const int scale = 2;
+    const int pad   = 8;
+    const int marginBottom = H / 12;
+    const int marginLeft   = W / 14;
+
+    int tw = textWidthScaled(text, scale);
+    int panelW = tw + pad * 2;
+    int panelH = 7 * scale + pad * 2;
+
+    int px0 = marginLeft;
+    int px1 = px0 + panelW;
+    int py1 = H - marginBottom;
+    int py0 = py1 - panelH;
 
     for (int y = py0; y <= py1; y++)
         for (int x = px0; x <= px1; x++)
@@ -1459,6 +1530,10 @@ void PlayerOverlay::onFrame(uint8_t* Ytex, int Ywidth, int Yheight)
     }
     if (gettime() < self->bitrateIndicatorExpireTicks)
         drawBitrateIndicator(Ytex, Ywidth, Yheight, self->bitrateIndicatorText);
+
+    /* A/V-delay toast: drawn in every state, like volume/bitrate. */
+    if (self->delayIndicatorTimer > 0)
+        drawDelayIndicator(Ytex, Ywidth, Yheight, self->delayIndicatorText);
 
     if (self->state == State::Hidden) return;
 

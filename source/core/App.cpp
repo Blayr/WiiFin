@@ -1366,7 +1366,7 @@ void App::loop() {
                 case 1: {
                     // Launch Settings view
                     SettingsView sv(btnTex, font, jellyfinClient, musicEnabled, debugLogFileEnabled,
-                                    bgImageLoadingEnabled);
+                                    bgImageLoadingEnabled, g_wiifin_audio_delay_default_ms);
                     // See the matching comment in runProfilePicker() -- one
                     // settle frame before this screen's first input poll, so
                     // the A press that opened Settings can't also register
@@ -1565,6 +1565,10 @@ void App::loadSettings() {
             bgImageLoadingEnabled = atoi(val) != 0;
         } else if (strcmp(key, "debug_log_file") == 0) {
             debugLogFileEnabled = atoi(val) != 0;
+        } else if (strcmp(key, "audio_delay_ms") == 0) {
+            int v = atoi(val);
+            if (v >= AUDIO_DELAY_MIN_MS && v <= AUDIO_DELAY_MAX_MS)
+                g_wiifin_audio_delay_default_ms = v;
         } else if (strcmp(key, "network_kbps") == 0) {
             /* Last session's measured throughput -- no identity key (see
              * networkKbps's declaration for why), just an optimistic
@@ -1630,6 +1634,7 @@ void App::saveSettings() {
     fprintf(f, "bg_image_loading=%d\n", bgImageLoadingEnabled ? 1 : 0);
     fprintf(f, "network_kbps=%.1f\n",   (double)jellyfinClient.networkKbps);
     fprintf(f, "debug_log_file=%d\n",   debugLogFileEnabled ? 1 : 0);
+    fprintf(f, "audio_delay_ms=%d\n",   g_wiifin_audio_delay_default_ms);
     fprintf(f, "profile_count=%d\n",   (int)profiles.size());
     for (int i = 0; i < (int)profiles.size(); i++) {
         const SavedProfile& p = profiles[i];

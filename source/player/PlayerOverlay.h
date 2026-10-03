@@ -56,8 +56,10 @@ public:
      * never sees GC pad state, so those bits are always safe to act on
      * directly even in video mode, unlike real-Wiimote-sourced bits which
      * ov_tick may have already handled. */
+    /* gcCStickX: Input::gcCStickHeldX(), drives the live A/V delay nudge. */
     void tick(float timePos, int paused, uint32_t btnsDown, uint32_t btnsHeld,
-              float irX, float irY, bool irValid, uint32_t gcDown = 0);
+              float irX, float irY, bool irValid, uint32_t gcDown = 0,
+              int gcCStickX = 0);
 
     /* Call once, right after construction and before wii_player_play() --
      * shows a bottom-right toast for ~2s with the transcode bitrate and
@@ -139,6 +141,19 @@ private:
     int volLevel         = volLevelMax / 2;
     int volIndicatorTimer = 0;
     void adjustVolume(int delta);
+
+    /* Live A/V delay nudge (C-stick). The toast updates per notch, but the
+     * MPlayer command is only sent once the stick idles (sending per notch
+     * was slow and janky). Clamped to +/-2 s. */
+    void adjustAudioDelayNotch(int dir); /* dir: -1 or +1 */
+    void flushPendingAudioDelay();
+    float    delayPendingDeltaSecs = 0.0f; /* unsent delta, added to g_wiifin_audio_delay_secs */
+    uint32_t delayNextNotchMs      = 0;    /* gettime()-ms; next notch allowed once passed while held */
+    uint32_t delayApplyDeadlineMs  = 0;    /* gettime()-ms; flush pending once passed with no new notch */
+
+    /* A/V-delay toast, drawn in every state like the volume gauge. */
+    char delayIndicatorText[32] = "";
+    int  delayIndicatorTimer    = 0; /* frames remaining, mirrors volIndicatorTimer */
 
     /* Transient bottom-right bitrate/network toast -- see
      * showBitrateIndicator() above. Drawn by onFrame() while gettime() is

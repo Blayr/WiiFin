@@ -7,7 +7,7 @@ class SettingsView {
 public:
     SettingsView(GRRLIB_texImg* btn, GRRLIB_ttfFont* font, JellyfinClient& client,
                 bool& musicEnabled, bool& debugLogFileEnabled,
-                bool& bgImageLoadingEnabled);
+                bool& bgImageLoadingEnabled, int& audioDelayMs);
 
     // Returns true when the user exits (B or back)
     bool update(ir_t& ir);
@@ -20,6 +20,7 @@ private:
     bool&           musicEnabled;
     bool&           debugLogFileEnabled;
     bool&           bgImageLoadingEnabled;
+    int&            audioDelayMs; // playback start A/V delay, see g_wiifin_audio_delay_default_ms
 
     int  selectedIndex = 0;
     bool irMode        = false;

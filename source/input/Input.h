@@ -31,4 +31,7 @@ public:
     // PAD_ButtonsHeld). Safe to call even with no GameCube pad connected
     // (returns 0).
     static u32 gcButtonsAsWpad(bool held);
+
+    // GC C-stick X: -1/+1 while held past the deadzone, else 0. Not edge-triggered.
+    static int gcCStickHeldX();
 };

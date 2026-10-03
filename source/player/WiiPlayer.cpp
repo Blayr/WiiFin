@@ -31,6 +31,7 @@
 #include <wiiuse/wpad.h>   /* WPAD_ScanPads, WPAD_ButtonsDown, … */
 #include <ogc/pad.h>       /* PAD_ScanPads — GameCube controller support */
 #include "../input/Input.h" /* Input::gcButtonsAsWpad — shared GC-to-WPAD button translation */
+#include "../core/DebugLog.h"
 #include <unistd.h>        /* usleep */
 #include <network.h>       /* net_close — socket cleanup after MPlayer longjmp */
 
@@ -120,6 +121,12 @@ extern "C" {
     /* Seconds to pass to MPlayer -ss (skip at demuxer level).
      * Set by App before wii_player_play() when a RESUME_PAD was applied. */
     volatile float g_wiifin_ss_secs = 0.0f;
+
+    /* See WiiPlayer.h. */
+    int g_wiifin_audio_delay_default_ms = 0;
+
+    /* Live A/V delay; reset to the setting each session. */
+    volatile float g_wiifin_audio_delay_secs = 0.0f;
 }
 
 /* -----------------------------------------------------------------------
@@ -282,6 +289,9 @@ static void* bgThreadFunc(void*)
         u32 gcDown = gcHeld & ~prevGcHeld;
         prevGcHeld = gcHeld;
 
+        /* C-stick isn't in the WPAD-style bitmask; see Input::gcCStickHeldX(). */
+        int gcCStickX = Input::gcCStickHeldX();
+
         /* Read IR pointer — WPAD_IR() computes screen coords from raw sensor
          * data already stored in wd; safe to call from a second thread. */
         ir_t ir;
@@ -321,7 +331,7 @@ static void* bgThreadFunc(void*)
         if (s_overlay)
             s_overlay->tick(g_wiifin_session_start_secs + g_mplayer_time_pos,
                             g_mplayer_paused, down, held,
-                            irX, irY, (bool)ir.valid, gcDown);
+                            irX, irY, (bool)ir.valid, gcDown, gcCStickX);
 
         if (s_music_tick_cb)
             s_music_tick_cb(g_mplayer_paused, down, held);
@@ -408,7 +418,10 @@ int wii_player_play(const char* url)
     addArg("-mc"); addArg("15");         /* 15 s max A/V correction — handles the
                                         * large initial gap produced by Jellyfin's
                                         * live transcoder on mid-stream resumes */
-    addArg("-delay"); addArg("0.3");
+    /* User setting -- see g_wiifin_audio_delay_default_ms. */
+    char delayBuf[16];
+    snprintf(delayBuf, sizeof(delayBuf), "%.2f", g_wiifin_audio_delay_default_ms / 1000.0);
+    addArg("-delay"); addArg(delayBuf);
     addArg("-lavdopts"); addArg("fast:skiploopfilter=all:skipidct=nonref:skipframe=nonref");
     addArg("-hardframedrop"); /* drop decode units at demuxer level when pts queue
                               * fills — prevents the pts-overflow deadlock that
@@ -439,6 +452,7 @@ int wii_player_play(const char* url)
     g_wiifin_vol_delta    = 0;
     g_wiifin_gx_btn_consumed  = 0;
     g_wiifin_home_menu_active = 0;
+    g_wiifin_audio_delay_secs = g_wiifin_audio_delay_default_ms / 1000.0f; /* matches -delay below */
     /* g_wiifin_known_duration is set by App before this call — do not reset it.
      * g_wiifin_loading_active is cleared by the mplayer.c main-loop hook once
      * time_pos has advanced > 1 s from the point where the first frame was
@@ -681,6 +695,19 @@ void wii_player_pause_toggle(void)
 {
     /* mp_input_queue_cmd is mutex-protected in MPlayer CE (HAVE_PTHREADS=yes) */
     mp_input_queue_cmd(mp_input_parse_cmd(const_cast<char*>("pause")));
+}
+
+void wii_player_audio_delay_adjust(float deltaSeconds)
+{
+    g_wiifin_audio_delay_secs += deltaSeconds;
+    /* No [abs]: MPlayer adds the value to its current delay. */
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "audio_delay %.2f", (double)deltaSeconds);
+    struct mp_cmd_t* parsed = mp_input_parse_cmd(cmd);
+    /* DebugLog so it's visible in the in-app log viewer without a USB Gecko. */
+    DebugLog::Log("WiiPlayer: audio_delay cmd='%s' parsed=%p total=%.2f",
+                   cmd, (void*)parsed, (double)g_wiifin_audio_delay_secs);
+    mp_input_queue_cmd(parsed);
 }
 
 void wii_player_seek_abs(float seconds)
