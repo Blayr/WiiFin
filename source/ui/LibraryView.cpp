@@ -4212,8 +4212,14 @@ void LibraryView::drawDetailView(ir_t& ir) {
         GRRLIB_PrintfTTF(cx - tw/2, cy - 10, font, playLabel, 16, 0xFFFFFFFF);
     }
 
-    // ---- Title ----
+    // ---- Title (series name above it for episodes) ----
     int y = POSTER_Y;
+    if (!detail.seriesName.empty()) {
+        bool jp = hasJapanese(detail.seriesName);
+        std::string series = jp ? detail.seriesName : filterDejaVu(detail.seriesName, 45);
+        GRRLIB_PrintfTTF(INFO_X, y, jp ? jpFont : font, series.c_str(), 16, 0x88BBEEFF);
+        y += 22;
+    }
     {
         bool jp = hasJapanese(detail.name);
         std::string title = jp ? detail.name : filterDejaVu(detail.name, 40);
@@ -4223,9 +4229,14 @@ void LibraryView::drawDetailView(ir_t& ir) {
 
     // ---- Year  Runtime  Rating ----
     {
-        char meta[64] = "";
-        if (detail.year)
-            snprintf(meta, sizeof(meta), "%d", detail.year);
+        char meta[80] = "";
+        if (!detail.seriesName.empty() && detail.episodeNumber > 0)
+            snprintf(meta, sizeof(meta), "S%d E%d  ", detail.seasonNumber, detail.episodeNumber);
+        if (detail.year) {
+            char yr[8];
+            snprintf(yr, sizeof(yr), "%d", detail.year);
+            strncat(meta, yr, sizeof(meta) - strlen(meta) - 1);
+        }
         if (detail.runtimeTicks > 0) {
             int secs = (int)(detail.runtimeTicks / 10000000LL);
             int h = secs / 3600, m = (secs % 3600) / 60;
