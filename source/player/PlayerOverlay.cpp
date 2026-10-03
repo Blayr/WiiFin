@@ -426,6 +426,32 @@ void PlayerOverlay::adjustAudioDelayNotch(int dir)
     delayIndicatorTimer = 60; /* ~2s at the ~30 Hz bgThread tick rate, matches volIndicatorTimer */
 }
 
+bool PlayerOverlay::updateAutoplay(float timePos, bool anyPress, bool bPress)
+{
+    const float kFireAtSecs = 1.0f; /* switch slightly early so MPlayer's EOF can't beat us */
+    if (anyPress) ctx.userInteracted = true;
+    if (ctx.autoplayGo && bPress) {
+        ctx.autoplayGo    = false;
+        autoplayCancelled = true;
+        return true;
+    }
+    if (!ctx.autoplayNext || autoplayCancelled || autoplayFired) return false;
+
+    float dur = g_mplayer_duration > 0.0f ? g_mplayer_duration : g_wiifin_known_duration;
+    if (dur < 60.0f) return false;
+    float remaining = dur - timePos;
+    if (remaining > AUTOPLAY_LEAD_SECS) { ctx.autoplayGo = false; return false; } /* e.g. scrubbed back */
+
+    ctx.autoplayGo = true;
+    float frac = (AUTOPLAY_LEAD_SECS - remaining) / (AUTOPLAY_LEAD_SECS - kFireAtSecs);
+    autoplayFrac = frac < 0.0f ? 0.0f : (frac > 1.0f ? 1.0f : frac);
+    if (remaining <= kFireAtSecs) {
+        autoplayFired = true;
+        wii_player_request_next();
+    }
+    return false;
+}
+
 void PlayerOverlay::flushPendingAudioDelay()
 {
     if (delayPendingDeltaSecs == 0.0f) return;
@@ -482,6 +508,12 @@ void PlayerOverlay::tick(float timePos, int paused, uint32_t btnsDown, uint32_t 
 
     if (volIndicatorTimer > 0) --volIndicatorTimer;
     if (delayIndicatorTimer > 0) --delayIndicatorTimer;
+
+    if (updateAutoplay(timePos, (btnsDown | gcDown) != 0,
+                       ((btnsDown | gcDown) & WPAD_BUTTON_B) != 0)) {
+        btnsDown &= ~(uint32_t)WPAD_BUTTON_B;
+        gcDown   &= ~(uint32_t)WPAD_BUTTON_B;
+    }
 
     /* If the GX overlay (vo_gx.c) already handled buttons this frame,
      * drop them from btnsDown so we don't double-fire actions.
@@ -1381,6 +1413,33 @@ static void drawDelayIndicator(uint8_t* Y, int W, int H, const char* text)
     drawTextScaled(Y, W, px0 + pad, py0 + pad, text, 230, scale);
 }
 
+/* Bottom-right "Next ->" card with a bar that fills as the
+ * autoplay countdown runs out. */
+static void drawAutoplayCard(uint8_t* Y, int W, int H, float frac)
+{
+    const char* text = "Next ->";
+    const int scale = 2, pad = 8, barH = 6, gap = 6;
+    int tw = textWidthScaled(text, scale);
+    int panelW = tw + pad * 2;
+    int panelH = 7 * scale + gap + barH + pad * 2;
+
+    int px1 = W - W / 14;
+    int px0 = px1 - panelW;
+    int py1 = H - H / 6;
+    int py0 = py1 - panelH;
+
+    for (int y = py0; y <= py1; y++)
+        for (int x = px0; x <= px1; x++)
+            setYpix(Y, W, x, y, 20);
+    drawTextScaled(Y, W, px0 + pad, py0 + pad, text, 230, scale);
+
+    int bx0 = px0 + pad, by0 = py0 + pad + 7 * scale + gap;
+    int fillW = (int)(tw * frac);
+    for (int y = by0; y < by0 + barH; y++)
+        for (int x = bx0; x < bx0 + tw; x++)
+            setYpix(Y, W, x, y, (x - bx0 < fillW) ? 230 : 70);
+}
+
 static void drawVolumeIndicator(uint8_t* Y, int W, int H, int level, int levelMax)
 {
     const int scale   = 2;
@@ -1534,6 +1593,9 @@ void PlayerOverlay::onFrame(uint8_t* Ytex, int Ywidth, int Yheight)
     /* A/V-delay toast: drawn in every state, like volume/bitrate. */
     if (self->delayIndicatorTimer > 0)
         drawDelayIndicator(Ytex, Ywidth, Yheight, self->delayIndicatorText);
+
+    if (self->ctx.autoplayGo)
+        drawAutoplayCard(Ytex, Ywidth, Yheight, self->autoplayFrac);
 
     if (self->state == State::Hidden) return;
 

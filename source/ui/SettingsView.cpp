@@ -4,7 +4,7 @@
 #include "../version.h"
 #include "../player/WiiPlayer.h" // AUDIO_DELAY_*_MS
 
-static const int NUM_SETTINGS = 9; // extensible
+static const int NUM_SETTINGS = 10; // extensible
 static const int ROW_Y0 = 58;
 static const int ROW_H  = 46; // actual drawn box height -- see draw*Row()
 static const int ROW_DY = 48; // row-to-row spacing (includes the gap)
@@ -14,9 +14,10 @@ static const int VISIBLE_ROWS = 7;
 
 SettingsView::SettingsView(GRRLIB_texImg* btn, GRRLIB_ttfFont* f, JellyfinClient& c,
                            bool& music, bool& debugLogFile, bool& bgImageLoading,
-                           int& audioDelay)
+                           int& audioDelay, int& autoplay)
     : btnTex(btn), font(f), client(c), musicEnabled(music), debugLogFileEnabled(debugLogFile),
-      bgImageLoadingEnabled(bgImageLoading), audioDelayMs(audioDelay) {}
+      bgImageLoadingEnabled(bgImageLoading), audioDelayMs(audioDelay),
+      autoplayLimit(autoplay) {}
 
 // Screen Y of setting row i given the current scroll position. Only
 // meaningful for visible rows (see isRowVisible).
@@ -160,20 +161,21 @@ bool SettingsView::update(ir_t& ir) {
                 audioDelayMs += AUDIO_DELAY_STEP_MS;
                 if (audioDelayMs > AUDIO_DELAY_MAX_MS) audioDelayMs = AUDIO_DELAY_MIN_MS;
                 break;
-            case 4: musicEnabled       = !musicEnabled;        break;
+            case 4: autoplayLimit = (autoplayLimit + 1) % (AUTOPLAY_NO_LIMIT + 1); break;
+            case 5: musicEnabled       = !musicEnabled;        break;
             // Read by LibraryView's constructor, so it applies the next time
             // a profile's library is opened, not to the one already open.
-            case 5: bgImageLoadingEnabled = !bgImageLoadingEnabled; break;
+            case 6: bgImageLoadingEnabled = !bgImageLoadingEnabled; break;
             // One-shot: only fires while cacheClearedCount is still -1 (unset
             // this time Settings was opened). Re-pressing afterward is a no-op
             // rather than clearing an already-empty cache and overwriting the
             // "Cleared N" message with "Cleared 0".
-            case 6: if (cacheClearedCount < 0) cacheClearedCount = client.clearImageCache(); break;
-            case 7:
+            case 7: if (cacheClearedCount < 0) cacheClearedCount = client.clearImageCache(); break;
+            case 8:
                 debugLogFileEnabled = !debugLogFileEnabled;
                 DebugLog::SetFileLoggingEnabled(debugLogFileEnabled);
                 break;
-            case 8:
+            case 9:
                 viewingLog  = true;
                 logScrollTop = 0;
                 break;
@@ -188,6 +190,10 @@ bool SettingsView::update(ir_t& ir) {
             if (audioDelayMs < AUDIO_DELAY_MIN_MS) audioDelayMs = AUDIO_DELAY_MIN_MS;
             if (audioDelayMs > AUDIO_DELAY_MAX_MS) audioDelayMs = AUDIO_DELAY_MAX_MS;
         }
+    }
+    if (selectedIndex == 4) {
+        if (Input::isRightPressed() && autoplayLimit < AUTOPLAY_NO_LIMIT) autoplayLimit++;
+        if (Input::isLeftPressed()  && autoplayLimit > 0)                 autoplayLimit--;
     }
 
     if (aPressed && !ir.valid && !irMode) fireAction(selectedIndex);
@@ -292,36 +298,46 @@ void SettingsView::render(ir_t& ir) {
             delayVal, selectedIndex == 3);
     }
 
-    if (isRowVisible(4))
-    drawToggleRow(60, rowY(4), 520,
-        "Background Music",
-        "Play background music in menus",
-        musicEnabled, selectedIndex == 4);
+    if (isRowVisible(4)) {
+        char apVal[16];
+        if (autoplayLimit == 0)                      snprintf(apVal, sizeof(apVal), "OFF");
+        else if (autoplayLimit == AUTOPLAY_NO_LIMIT) snprintf(apVal, sizeof(apVal), "NO LIMIT");
+        else                                         snprintf(apVal, sizeof(apVal), "%d", autoplayLimit);
+        drawCycleRow(60, rowY(4), 520, "Autoplay Next Episode",
+            "Episodes to autoplay in a row (B cancels the countdown)",
+            apVal, selectedIndex == 4);
+    }
 
     if (isRowVisible(5))
     drawToggleRow(60, rowY(5), 520,
+        "Background Music",
+        "Play background music in menus",
+        musicEnabled, selectedIndex == 5);
+
+    if (isRowVisible(6))
+    drawToggleRow(60, rowY(6), 520,
         "Background Image Loading",
         "Load posters in the background (applies next time a profile is opened)",
-        bgImageLoadingEnabled, selectedIndex == 5);
+        bgImageLoadingEnabled, selectedIndex == 6);
 
     char cacheDesc[64];
     if (cacheClearedCount >= 0)
         snprintf(cacheDesc, sizeof(cacheDesc), "Cleared %d cached image(s)", cacheClearedCount);
     else
         snprintf(cacheDesc, sizeof(cacheDesc), "Frees SD card space by deleting cached posters/backdrops");
-    if (isRowVisible(6))
-    drawActionRow(60, rowY(6), 520,
-        "Clear Image Cache", cacheDesc, selectedIndex == 6, cacheClearedCount >= 0);
-
     if (isRowVisible(7))
-    drawToggleRow(60, rowY(7), 520,
-        "Debug Log File",
-        "Write the debug log to sd:/apps/WiiFin/wiifin_log.txt (off by default)",
-        debugLogFileEnabled, selectedIndex == 7);
+    drawActionRow(60, rowY(7), 520,
+        "Clear Image Cache", cacheDesc, selectedIndex == 7, cacheClearedCount >= 0);
 
     if (isRowVisible(8))
-    drawActionRow(60, rowY(8), 520,
-        "View Debug Log", "Browse this session's log on-screen", selectedIndex == 8, false);
+    drawToggleRow(60, rowY(8), 520,
+        "Debug Log File",
+        "Write the debug log to sd:/apps/WiiFin/wiifin_log.txt (off by default)",
+        debugLogFileEnabled, selectedIndex == 8);
+
+    if (isRowVisible(9))
+    drawActionRow(60, rowY(9), 520,
+        "View Debug Log", "Browse this session's log on-screen", selectedIndex == 9, false);
 
     // Scrollbar to the right of the rows, only when the list overflows.
     if (NUM_SETTINGS > VISIBLE_ROWS) {

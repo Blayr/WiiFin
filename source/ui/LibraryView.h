@@ -55,6 +55,9 @@ public:
     // data is still available.
     void reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
                              GRRLIB_texImg* cursor, GRRLIB_texImg* ring);
+    // Return to the episode that played last (autoplay/next may have moved
+    // past the one playback started on). Call before reinitAfterPlayback().
+    void setPlaybackReturnEpisode(const std::string& itemId, int episodeIdx);
 
     std::string pendingPlayUrl;           // set before returning true when the user hits Play
     std::string pendingPlayItemId;        // Jellyfin item id for /Sessions/Playing reporting

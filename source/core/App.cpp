@@ -84,6 +84,8 @@ static void grrlibSpinnerCleanup(void)
 volatile bool g_app_powerOff = false;
 volatile bool g_app_reset    = false;
 static volatile bool s_restartApp = false;
+/* "Autoplay Next Episode" setting -- see AUTOPLAY_NO_LIMIT. */
+static int s_autoplayLimit = AUTOPLAY_DEFAULT;
 static void onPower() { g_app_powerOff = true; }
 static void onReset(u32, void*) { g_app_reset = true; }
 
@@ -182,6 +184,11 @@ static bool runPlaySession(JellyfinClient& client,
     std::string           url           = lv.pendingPlayUrl;
     std::vector<JellyfinEpisode> episodes    = lv.pendingPlayEpisodes;
     int                          episodeIdx  = lv.pendingPlayEpisodeIdx;
+    /* On every return path: come back to the episode that played last. */
+    struct ReturnToLastEpisode {
+        LibraryView& lv; const std::string& itemId; const int& idx; bool isEpisode;
+        ~ReturnToLastEpisode() { if (isEpisode) lv.setPlaybackReturnEpisode(itemId, idx); }
+    } returnToLast{lv, itemId, episodeIdx, !episodes.empty()};
     std::vector<MediaStream>     audioStreams = lv.pendingPlayAudioStreams;
     std::vector<MediaStream>     subStreams   = lv.pendingPlaySubStreams;
     int audioIdx = lv.pendingPlayAudioIdx;
@@ -207,6 +214,9 @@ static bool runPlaySession(JellyfinClient& client,
                (int)musicWasRunning, lv.pendingPlayItemId.c_str(),
                (int)lv.pendingPlayEpisodes.size());
 
+    /* Episodes autoplayed in a row without the user pressing anything. */
+    int autoplayRun = 0;
+
     for (;;) {
         /* Pause BGM at the start of every outer iteration so ao_gekko can take
          * over the AI DMA.  On the first iteration this is the initial pause;
@@ -229,6 +239,8 @@ static bool runPlaySession(JellyfinClient& client,
         if (!episodes.empty() && episodeIdx < (int)episodes.size())
             ctx.episodeTitle = episodes[episodeIdx].name;
         ctx.title        = title;
+        ctx.autoplayNext = episodeIdx + 1 < (int)episodes.size() && s_autoplayLimit != 0 &&
+                           (s_autoplayLimit == AUTOPLAY_NO_LIMIT || autoplayRun < s_autoplayLimit);
 
         /* Try to fetch intro timestamps (for TV episodes) */
         if (!episodes.empty()) {
@@ -479,6 +491,16 @@ static bool runPlaySession(JellyfinClient& client,
         }
 
         wii_player_set_overlay(nullptr);
+
+        /* Autoplay: the countdown finished, or MPlayer hit EOF while it was
+         * still running. Pressing anything this episode restarts the count. */
+        if (ctx.autoplayGo && (reason == PLAYER_STOP_EOF || reason == PLAYER_STOP_NEXT)) {
+            reason      = PLAYER_STOP_NEXT;
+            autoplayRun = ctx.userInteracted ? 1 : autoplayRun + 1;
+            DebugLog::Log("autoplay: next episode (%d in a row)", autoplayRun);
+        } else if (reason == PLAYER_STOP_NEXT || reason == PLAYER_STOP_PREV) {
+            autoplayRun = 0;
+        }
 
         /* --- Handle stop reason --- */
         if (reason == PLAYER_STOP_HOME) {
@@ -1366,7 +1388,8 @@ void App::loop() {
                 case 1: {
                     // Launch Settings view
                     SettingsView sv(btnTex, font, jellyfinClient, musicEnabled, debugLogFileEnabled,
-                                    bgImageLoadingEnabled, g_wiifin_audio_delay_default_ms);
+                                    bgImageLoadingEnabled, g_wiifin_audio_delay_default_ms,
+                                    s_autoplayLimit);
                     // See the matching comment in runProfilePicker() -- one
                     // settle frame before this screen's first input poll, so
                     // the A press that opened Settings can't also register
@@ -1565,6 +1588,9 @@ void App::loadSettings() {
             bgImageLoadingEnabled = atoi(val) != 0;
         } else if (strcmp(key, "debug_log_file") == 0) {
             debugLogFileEnabled = atoi(val) != 0;
+        } else if (strcmp(key, "autoplay_limit") == 0) {
+            int v = atoi(val);
+            if (v >= 0 && v <= AUTOPLAY_NO_LIMIT) s_autoplayLimit = v;
         } else if (strcmp(key, "audio_delay_ms") == 0) {
             int v = atoi(val);
             if (v >= AUDIO_DELAY_MIN_MS && v <= AUDIO_DELAY_MAX_MS)
@@ -1635,6 +1661,7 @@ void App::saveSettings() {
     fprintf(f, "network_kbps=%.1f\n",   (double)jellyfinClient.networkKbps);
     fprintf(f, "debug_log_file=%d\n",   debugLogFileEnabled ? 1 : 0);
     fprintf(f, "audio_delay_ms=%d\n",   g_wiifin_audio_delay_default_ms);
+    fprintf(f, "autoplay_limit=%d\n",   s_autoplayLimit);
     fprintf(f, "profile_count=%d\n",   (int)profiles.size());
     for (int i = 0; i < (int)profiles.size(); i++) {
         const SavedProfile& p = profiles[i];

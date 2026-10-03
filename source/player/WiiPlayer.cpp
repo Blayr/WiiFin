@@ -33,6 +33,7 @@
 #include "../input/Input.h" /* Input::gcButtonsAsWpad — shared GC-to-WPAD button translation */
 #include "../core/DebugLog.h"
 #include <unistd.h>        /* usleep */
+#include <ogc/lwp_watchdog.h> /* gettime, ticks_to_millisecs */
 #include <network.h>       /* net_close — socket cleanup after MPlayer longjmp */
 
 /* gx_supp globals used by vo_gx / mpgxInit */
@@ -210,6 +211,8 @@ static uint8_t        s_bg_stack[48 * 1024] __attribute__((aligned(32)));
 extern volatile bool g_app_powerOff;
 extern volatile bool g_app_reset;
 
+static void closeStuckPlayerSockets();
+
 static void* bgThreadFunc(void*)
 {
     /* In video mode (-vo gx): MPlayer's vo_gx/flip_page calls WPAD_ScanPads
@@ -244,7 +247,21 @@ static void* bgThreadFunc(void*)
     u32 prevGcHeld = Input::gcButtonsAsWpad(/*held=*/true);
     u32 prevHeld = (wd0 ? wd0->btns_h : 0) | prevGcHeld;
     int prevPaused = g_mplayer_paused;
+    u64  quitSeenTick      = 0;
+    bool quitSocketsClosed = false;
     while (!s_bg_stop) {
+        /* MPlayer can hang on the way out: cache_uninit() joins the cache
+         * thread, which may be stuck in a network read that never returns.
+         * If a stop is still pending after 4 s, close MPlayer's sockets so
+         * that read fails and shutdown can finish. */
+        if (async_quit_request && !quitSocketsClosed) {
+            if (!quitSeenTick) quitSeenTick = gettime();
+            else if (ticks_to_millisecs(gettime() - quitSeenTick) > 4000) {
+                quitSocketsClosed = true;
+                closeStuckPlayerSockets();
+            }
+        }
+
         /* If the user pressed the Wii power button or reset button,
          * stop MPlayer so wii_player_play() returns cleanly and App.cpp
          * can call reportPlaybackStopped / deleteActiveEncoding before
@@ -721,10 +738,30 @@ void wii_player_seek_abs(float seconds)
     g_wiifin_seek_secs = seconds;
 }
 
+/* See the shutdown check at the top of bgThreadFunc. WiiFin holds no
+ * sockets during playback, so every open FD here is MPlayer's. */
+static void closeStuckPlayerSockets()
+{
+    char list[24 * 3 + 1] = "";
+    int  listLen = 0;
+    for (s32 fd = 0; fd < 24; ++fd)
+        if (net_close(fd) >= 0)
+            listLen += snprintf(list + listLen, sizeof(list) - (size_t)listLen, " %d", (int)fd);
+    DebugLog::Log("player stuck stopping: closed sockets:%s", listLen ? list : " none");
+}
+
 void wii_player_seek_rel(float delta)
 {
     float pos = g_mplayer_time_pos + delta;
     if (pos < 0.0f) pos = 0.0f;
+    /* Don't seek past the end: an in-stream seek beyond EOF can hang
+     * MPlayer's shutdown. Stop 3 s short (positions here are session-relative). */
+    float dur = g_mplayer_duration > 0.0f ? g_mplayer_duration : g_wiifin_known_duration;
+    if (delta > 0.0f && dur > 0.0f) {
+        float maxPos = dur - g_wiifin_session_start_secs - 3.0f;
+        if (maxPos <= g_mplayer_time_pos) return;
+        if (pos > maxPos) pos = maxPos;
+    }
     g_wiifin_loading_start_pos = -1.0f;
     SYS_Report("[DBG] loading_active SET=1 @ seek_rel(%.1f)\n", pos);
     g_wiifin_loading_active    = 1;

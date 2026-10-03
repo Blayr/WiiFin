@@ -155,6 +155,9 @@ void wii_player_show_osd(const char* text, int durationMs);
 extern int g_wiifin_audio_delay_default_ms;
 enum { AUDIO_DELAY_STEP_MS = 50, AUDIO_DELAY_MIN_MS = -500, AUDIO_DELAY_MAX_MS = 500 };
 
+/* "Autoplay Next Episode" setting: 0 = off, 1-6 = episodes in a row, this = no limit. */
+enum { AUTOPLAY_DEFAULT = 3, AUTOPLAY_NO_LIMIT = 7 };
+
 /* Current live A/V delay in seconds, tracked here since MPlayer doesn't
  * expose it. Starts at g_wiifin_audio_delay_default_ms; can go negative. */
 extern volatile float g_wiifin_audio_delay_secs;

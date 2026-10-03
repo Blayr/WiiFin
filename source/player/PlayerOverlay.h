@@ -30,7 +30,18 @@ struct PlayerOverlayContext {
 
     /* Intro skip info */
     IntroInfo intro;
+
+    /* Autoplay. In: App sets autoplayNext when the next episode should
+     * autoplay. Out: autoplayGo is true while the end-of-episode countdown
+     * is running (cleared if the user cancels); userInteracted is set by any
+     * button press this session. */
+    bool autoplayNext   = false;
+    bool autoplayGo     = false;
+    bool userInteracted = false;
 };
+
+/* Countdown shown before autoplaying the next episode. */
+static const float AUTOPLAY_LEAD_SECS = 10.0f;
 
 /* -----------------------------------------------------------------------
  * PlayerOverlay — in-player control HUD.
@@ -141,6 +152,13 @@ private:
     int volLevel         = volLevelMax / 2;
     int volIndicatorTimer = 0;
     void adjustVolume(int delta);
+
+    /* End-of-episode autoplay countdown. B cancels it; returns true when it
+     * consumed a B press (so it doesn't also exit playback). */
+    bool  updateAutoplay(float timePos, bool anyPress, bool bPress);
+    bool  autoplayCancelled = false;
+    bool  autoplayFired     = false;
+    float autoplayFrac      = 0.0f; /* countdown bar fill, 0..1 */
 
     /* Live A/V delay nudge (C-stick). The toast updates per notch, but the
      * MPlayer command is only sent once the stick idles (sending per notch

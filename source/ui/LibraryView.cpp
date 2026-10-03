@@ -727,6 +727,14 @@ void LibraryView::reinitAfterPlayback(GRRLIB_ttfFont* f, GRRLIB_ttfFont* jf,
     // is opened. Avoid six image requests while returning from playback.
 }
 
+void LibraryView::setPlaybackReturnEpisode(const std::string& itemId, int episodeIdx) {
+    detailItemId = itemId;
+    if (episodeIdx >= 0 && episodeIdx < (int)episodes.size() && episodes[episodeIdx].id == itemId) {
+        episodeSel = episodeIdx;
+        clampEpisodeScroll();
+    }
+}
+
 void LibraryView::loadContinueWatching() {
     freeCWTextures();
     continueItems.clear();

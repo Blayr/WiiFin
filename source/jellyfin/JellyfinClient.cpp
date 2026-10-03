@@ -2735,15 +2735,20 @@ bool JellyfinClient::reportPlaybackStopped(const std::string& serverUrl,
 
     std::string resp;
     DebugLog::Log("Saving playback position...");
-    int status = httpRequest(serverUrl + "/Sessions/Playing/Stopped",
+    // Retry network-level failures: right after a stream plays to its end,
+    // the first request can lose its connection (Jellyfin logs "Unexpected
+    // end of request content"), which drops the position and watched state.
+    int status = -1;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt) usleep(500 * 1000);
+        status = httpRequest(serverUrl + "/Sessions/Playing/Stopped",
                              "POST", "application/json", body,
                              auth.accessToken, resp);
-    // TEMP diagnostic: user reports the resume position on the detail page
-    // stays stale after a B-exit, even navigating fully away and back --
-    // this confirms whether the save itself succeeded/failed server-side,
-    // as opposed to a client-side staleness/caching issue.
+        if (status > 0) break;
+    }
     bool ok = status == 204 || status == 200;
-    DebugLog::Log(ok ? "Position saved (HTTP %d)" : "Position save FAILED (HTTP %d)", status);
+    DebugLog::Log(ok ? "Position saved (HTTP %d, %lld ticks)" : "Position save FAILED (HTTP %d, %lld ticks)",
+                  status, positionTicks);
     return ok;
 }
 
