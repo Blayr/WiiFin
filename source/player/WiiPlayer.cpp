@@ -429,8 +429,10 @@ int wii_player_play(const char* url)
     addArg("-vo"); addArg("gx:colorspace=1");
     addArg("-ao"); addArg("gekko");
     addArg("-cache"); addArg("4096");
-    addArg("-cache-min"); addArg("5");   /* 5% of 4096 KB ≈ 205 KB ≈ 1.6s at 1 Mbps */
-    addArg("-cache-seek-min"); addArg("5");
+    addArg("-cache-min"); addArg("20");  /* 20% of 4096 KB ≈ 819 KB ≈ 6.5 s at 1 Mbps. 5% (≈1.6 s)
+                                        * drained on any network stall, and the frame
+                                        * dropping that followed showed up as A/V drift. */
+    addArg("-cache-seek-min"); addArg("20");
     addArg("-autosync"); addArg("10");
     addArg("-mc"); addArg("15");         /* 15 s max A/V correction — handles the
                                         * large initial gap produced by Jellyfin's
@@ -837,7 +839,7 @@ int wii_player_play_audio(const char* url)
         "-vo", "null",              /* audio-only: no video output; GRRLIB stays active */
         "-ao", "gekko",
         "-cache", "2048",
-        "-cache-min", "5",
+        "-cache-min", "20",   /* see wii_player_play() */
         "-autosync", "30",
         "-demuxer", "audio",        /* native streaming audio demuxer — lavf can't probe non-seekable HTTP MP3 */
         url,
