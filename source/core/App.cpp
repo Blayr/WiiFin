@@ -23,6 +23,7 @@
 #include <sys/iosupport.h>
 
 #include <unistd.h>
+#include <ogc/lwp_watchdog.h> // gettime(), ticks_to_millisecs()
 #include <sys/stat.h>
 #include <string>
 #include "../player/WiiPlayer.h"
@@ -39,6 +40,56 @@ extern unsigned char data_button_start_png[];
 extern unsigned int  data_button_start_png_len;
 extern unsigned char data_cursors_PointerP1_64_png[];
 extern unsigned int  data_cursors_PointerP1_64_png_len;
+
+/* runWithSpinner -- runs fn on a worker thread while the main thread keeps
+ * drawing a spinner, a label and the debug-log HUD, instead of freezing
+ * the last frame during a slow blocking call. Worker priority 64 is below
+ * the main thread's, same as LibraryView's runWithLoading(). */
+static std::function<void()> s_spinFn;
+static volatile bool         s_spinDone = false;
+static u8                    s_spinStack[32 * 1024] ATTRIBUTE_ALIGN(32);
+
+static void* spinWorker(void*)
+{
+    s_spinFn();
+    s_spinDone = true;
+    return nullptr;
+}
+
+static void runWithSpinner(GRRLIB_ttfFont* font, GRRLIB_texImg* ring,
+                           const char* label, std::function<void()> fn)
+{
+    s_spinFn   = std::move(fn);
+    s_spinDone = false;
+    lwp_t th;
+    LWP_CreateThread(&th, spinWorker, nullptr, s_spinStack, sizeof(s_spinStack), 64);
+    float angle = 0.0f;
+    u64 waitStart = gettime();
+    u32 nextBeatMs = 3000;
+    while (!s_spinDone) {
+        u32 waitedMs = (u32)ticks_to_millisecs(gettime() - waitStart);
+        if (waitedMs >= nextBeatMs) {   /* same heartbeat as LibraryView::runWithLoading */
+            DebugLog::Log("still waiting (%u s)", (unsigned)(waitedMs / 1000));
+            nextBeatMs += 3000;
+        }
+        GRRLIB_FillScreen(0x0A1628FF);
+        if (ring) {
+            GRRLIB_SetMidHandle(ring, true);
+            GRRLIB_DrawImg(320, 210, ring, angle, 1.0f, 1.0f, 0xFFFFFFFF);
+            GRRLIB_SetMidHandle(ring, false);
+        }
+        if (font && label) {
+            int tw = (int)GRRLIB_WidthTTF(font, label, 18);
+            GRRLIB_PrintfTTF(320 - tw / 2, 290, font, label, 18, 0xCCDDEEFF);
+        }
+        DebugLog::Render(font);
+        GRRLIB_Render();
+        angle += 4.0f;
+        if (angle >= 360.0f) angle -= 360.0f;
+    }
+    LWP_JoinThread(th, nullptr);
+    s_spinFn = nullptr;
+}
 
 /* Forward declaration — defined later in this file, before App::loop() */
 static bool doShowHomeOverlay(GRRLIB_ttfFont* font, GRRLIB_texImg* btnTex,
@@ -70,12 +121,26 @@ static void grrlibSpinnerRender(void)
     if (s_ringAngle >= 360.0f) s_ringAngle -= 360.0f;
 }
 
+/* Teardown spinner ring + font, loaded after every playback session.
+ * Freed exactly once: by grrlibSpinnerCleanup() before the next
+ * GRRLIB_Exit() (the font must go first -- GRRLIB_Exit() destroys its
+ * FreeType instance), or at the next teardown if MPlayer never ran it. */
+static GRRLIB_texImg*  s_teardownRing = nullptr;
+static GRRLIB_ttfFont* s_teardownFont = nullptr;
+
+static void freeTeardownAssets(void)
+{
+    if (s_teardownRing) { GRRLIB_FreeTexture(s_teardownRing); s_teardownRing = nullptr; }
+    if (s_teardownFont) { GRRLIB_FreeTTF(s_teardownFont);     s_teardownFont = nullptr; }
+}
+
 static void grrlibSpinnerCleanup(void)
 {
     if (s_loadingRingTex) {
         GRRLIB_FreeTexture(s_loadingRingTex);
         s_loadingRingTex = nullptr;
     }
+    freeTeardownAssets();
     GRRLIB_Exit();
 }
 
@@ -365,6 +430,10 @@ static bool runPlaySession(JellyfinClient& client,
              * risking a reuse attempt against a socket IOS considers dead. */
             client.closeKeepAliveConnection();
 
+            /* Normally already freed by grrlibSpinnerCleanup(); still set
+             * only if MPlayer bailed out before running it. */
+            freeTeardownAssets();
+
             /* After play returns, GRRLIB was exited by mpgxInit's cleanup.
              * Re-init it for the app UI. */
             g_wiifin_grrlib_render_cb  = nullptr;
@@ -397,6 +466,8 @@ static bool runPlaySession(JellyfinClient& client,
              * reinitAfterPlayback() once we're back in App::loop()). */
             GRRLIB_texImg*  tmpRing = GRRLIB_LoadTexture(data_ring_png);
             GRRLIB_ttfFont* tmpFont = GRRLIB_LoadTTF(data_wii_font_ttf, data_wii_font_ttf_len);
+            s_teardownRing = tmpRing;   /* freed later -- see freeTeardownAssets() */
+            s_teardownFont = tmpFont;
             for (int _fi = 0; _fi < 2; ++_fi) {
                 GRRLIB_FillScreen(0x0A1628FF);
                 if (tmpRing) {
@@ -450,27 +521,21 @@ static bool runPlaySession(JellyfinClient& client,
              * Also skip for track switches: playback resumes immediately at
              * the same position so the "stopped" report is both misleading
              * and a source of unnecessary multi-second loader freeze. */
-            /* Deliberately NOT wrapped in lv.runWithLoading() (a background
-             * LWP thread + live spinner) despite these being exactly the
-             * kind of slow calls that pattern is for -- a user hit what
-             * looked like a genuine hang (not just a long stall) right
-             * after a very short (~seconds) playback session, immediately
-             * after adding that wrapping here. Spawning a fresh thread to
-             * hit the network the instant wii_player_play() returns is a
-             * real behavioral change from before (synchronous, main-thread
-             * only) and a plausible way to race MPlayer/WiiPlayer's own
-             * teardown into the documented IOS-socket-not-yet-settled state
-             * (see httpsRequest's retry-loop comment) instead of just
-             * observing it. Reverted to synchronous pending further
-             * investigation -- the tradeoff is a frozen (non-animating)
-             * spinner during a slow report, not a suspected hang. */
+            /* Behind a live spinner (worker thread) rather than a frozen
+             * frame, so a slow server visibly shows which step it's on. */
             if (!willRetry && !isTrackSwitch && !isHomeSuspend && positionTicks > 0) {
-                if (client.reportPlaybackStopped(serverUrl, auth, itemId, mediaSourceId,
-                                                 playSessionId, positionTicks))
-                    lv.noteLocalPlayState(itemId, positionTicks, runtimeTicks);
+                bool saved = false;
+                runWithSpinner(tmpFont, tmpRing, "Saving position...", [&]() {
+                    saved = client.reportPlaybackStopped(serverUrl, auth, itemId, mediaSourceId,
+                                                         playSessionId, positionTicks);
+                });
+                if (saved) lv.noteLocalPlayState(itemId, positionTicks, runtimeTicks);
             }
-            if (!isHomeSuspend)
-                client.deleteActiveEncoding(serverUrl, auth, playSessionId);
+            if (!isHomeSuspend) {
+                runWithSpinner(tmpFont, tmpRing, "Stopping transcode...", [&]() {
+                    client.deleteActiveEncoding(serverUrl, auth, playSessionId);
+                });
+            }
 
             if (willRetry) {
                 long long retryTicks = positionTicks; /* already absolute -- see positionTicks above */
@@ -617,9 +682,13 @@ static bool runPlaySession(JellyfinClient& client,
             long long scrubTicks = (long long)(g_wiifin_scrub_target_secs * 10000000.0f);
 
             std::string newUrl, newSession;
-            if (!client.getTranscodingUrl(serverUrl, auth,
-                                          itemId, mediaSourceId,
-                                          audioIdx, subIdx, scrubTicks, newUrl, newSession)) return false;
+            bool urlOk = false;
+            runWithSpinner(s_teardownFont, s_teardownRing, "Seeking...", [&]() {
+                urlOk = client.getTranscodingUrl(serverUrl, auth,
+                                                 itemId, mediaSourceId,
+                                                 audioIdx, subIdx, scrubTicks, newUrl, newSession);
+            });
+            if (!urlOk) return false;
             url            = newUrl;
             playSessionId  = newSession;
             startTimeTicks = scrubTicks;  /* for premature-EOF retry on new session */
