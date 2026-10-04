@@ -1,0 +1,49 @@
+GRRLIB patch: use one static GX FIFO instead of memalign()ing a new one on
+every GRRLIB_Init().
+
+Applied after grrlib_keep_system_font_patch.diff (see Dockerfile.dev).
+WiiFin calls GRRLIB_Exit()/GRRLIB_Init() around every video playback, and
+stock GRRLIB_Init() allocates its 256 KB command FIFO from the heap each
+time. Once playback has used up MEM1, that allocation lands in MEM2. Every
+real-hardware GPU hang the watchdog has caught (main thread blocked in
+GX_DrawDone / waiting on FIFO space, GP not idle, read pointer frozen on
+valid commands) had the FIFO in MEM2 and MEM1 nearly exhausted; none
+happened before MEM1 filled up. A static buffer lives in .bss, which is
+always in MEM1, and also stops the 256 KB per-session heap churn.
+
+--- a/GRRLIB/GRRLIB/GRRLIB_core.c
++++ b/GRRLIB/GRRLIB/GRRLIB_core.c
+@@ -38,6 +38,10 @@
+ Mtx                 GXmodelView2D;
+ 
+ static void *gp_fifo = NULL;
++// WiiFin patch (grrlib_static_fifo_patch.diff): one static FIFO, reused by
++// every GRRLIB_Init(). memalign() put it in MEM2 once MEM1 filled up, and
++// the GPU then hung mid-frame on real hardware.
++static u8 gp_fifo_mem[DEFAULT_FIFO_SIZE] ATTRIBUTE_ALIGN(32);
+ 
+ static bool is_setup = false;  // To control entry and exit
+ 
+@@ -126,9 +130,7 @@
+     }
+ 
+     // The FIFO is the buffer the CPU uses to send commands to the GPU
+-    if ( !(gp_fifo = memalign(32, DEFAULT_FIFO_SIZE)) ) {
+-        return -1;
+-    }
++    gp_fifo = gp_fifo_mem;
+     memset(gp_fifo, 0, DEFAULT_FIFO_SIZE);
+     GX_Init(gp_fifo, DEFAULT_FIFO_SIZE);
+ 
+@@ -254,10 +256,7 @@
+         free(MEM_K1_TO_K0(xfb[1]));
+         xfb[1] = NULL;
+     }
+-    if (gp_fifo != NULL) {
+-        free(gp_fifo);
+-        gp_fifo = NULL;
+-    }
++    gp_fifo = NULL; // static -- see gp_fifo_mem
+ 
+     // Keep the system font loaded across GRRLIB_Exit()/GRRLIB_Init() cycles
+     // (WiiFin patch, see grrlib_keep_system_font_patch.diff): reloading it
